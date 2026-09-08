@@ -3,7 +3,7 @@ resource "aws_s3_bucket" "artifacts" {
 
   tags = {
     Workload = "ml-platform"
-    Data      = "model-artifacts"
+    Data     = "model-artifacts"
   }
 }
 
