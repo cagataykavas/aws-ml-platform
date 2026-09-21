@@ -52,7 +52,11 @@ def safe_plan():
                 "aws_s3_bucket_server_side_encryption_configuration",
                 {
                     "rule": [
-                        {"apply_server_side_encryption_by_default": [{"sse_algorithm": "aws:kms"}]}
+                        {
+                            "apply_server_side_encryption_by_default": [
+                                {"sse_algorithm": "aws:kms"}
+                            ]
+                        }
                     ]
                 },
             ),
@@ -60,10 +64,16 @@ def safe_plan():
             change(
                 "aws_security_group.endpoints",
                 "aws_security_group",
-                {"ingress": [{"cidr_blocks": ["10.50.0.0/16"], "ipv6_cidr_blocks": []}]},
+                {
+                    "ingress": [
+                        {"cidr_blocks": ["10.50.0.0/16"], "ipv6_cidr_blocks": []}
+                    ]
+                },
             ),
             change(
-                "aws_iam_role_policy.least_privilege", "aws_iam_role_policy", {"policy": policy}
+                "aws_iam_role_policy.least_privilege",
+                "aws_iam_role_policy",
+                {"policy": policy},
             ),
         ]
     }
@@ -80,13 +90,15 @@ def test_safe_plan_passes():
     ("mutate", "code"),
     [
         (
-            lambda p: p["resource_changes"][0]["change"]["after"].update(block_public_policy=False),
+            lambda p: p["resource_changes"][0]["change"]["after"].update(
+                block_public_policy=False
+            ),
             "s3_public_access_not_blocked",
         ),
         (
-            lambda p: p["resource_changes"][1]["change"]["after"]["versioning_configuration"][
-                0
-            ].update(status="Suspended"),
+            lambda p: p["resource_changes"][1]["change"]["after"][
+                "versioning_configuration"
+            ][0].update(status="Suspended"),
             "s3_versioning_disabled",
         ),
         (
@@ -96,7 +108,9 @@ def test_safe_plan_passes():
             "s3_kms_encryption_missing",
         ),
         (
-            lambda p: p["resource_changes"][4]["change"]["after"].update(enable_key_rotation=False),
+            lambda p: p["resource_changes"][4]["change"]["after"].update(
+                enable_key_rotation=False
+            ),
             "kms_rotation_disabled",
         ),
         (
@@ -116,7 +130,9 @@ def test_security_regressions_fail(mutate, code):
 def test_delete_and_replacement_are_blocked():
     plan = safe_plan()
     plan["resource_changes"][4]["change"]["actions"] = ["delete", "create"]
-    assert "destructive_change" in {item.code for item in evaluate_plan(plan).violations}
+    assert "destructive_change" in {
+        item.code for item in evaluate_plan(plan).violations
+    }
 
 
 @pytest.mark.parametrize(
