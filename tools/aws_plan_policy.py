@@ -59,7 +59,9 @@ def evaluate_plan(plan: dict[str, Any]) -> PolicyReport:
         after = body.get("after")
 
         if "delete" in actions:
-            violations.append(Violation("destructive_change", address, f"actions={actions}"))
+            violations.append(
+                Violation("destructive_change", address, f"actions={actions}")
+            )
         if after is None:
             continue
         if not isinstance(after, dict):
@@ -91,31 +93,46 @@ def evaluate_plan(plan: dict[str, Any]) -> PolicyReport:
             if ownership != "BucketOwnerEnforced":
                 violations.append(
                     Violation(
-                        "s3_ownership_not_enforced", address, f"object_ownership={ownership!r}"
+                        "s3_ownership_not_enforced",
+                        address,
+                        f"object_ownership={ownership!r}",
                     )
                 )
         elif resource_type == "aws_s3_bucket_server_side_encryption_configuration":
             algorithm = _nested_encryption_algorithm(after)
             if algorithm != "aws:kms":
                 violations.append(
-                    Violation("s3_kms_encryption_missing", address, f"algorithm={algorithm!r}")
+                    Violation(
+                        "s3_kms_encryption_missing", address, f"algorithm={algorithm!r}"
+                    )
                 )
-        elif resource_type == "aws_kms_key" and after.get("enable_key_rotation") is not True:
+        elif (
+            resource_type == "aws_kms_key"
+            and after.get("enable_key_rotation") is not True
+        ):
             violations.append(
-                Violation("kms_rotation_disabled", address, "enable_key_rotation must be true")
+                Violation(
+                    "kms_rotation_disabled", address, "enable_key_rotation must be true"
+                )
             )
         elif resource_type == "aws_iam_role_policy":
             _check_iam_policy(address, after.get("policy"), violations)
 
     for missing in sorted(REQUIRED_TYPES - present_types):
         violations.append(
-            Violation("required_control_missing", missing, "resource type absent from plan")
+            Violation(
+                "required_control_missing", missing, "resource type absent from plan"
+            )
         )
-    ordered = tuple(sorted(violations, key=lambda item: (item.code, item.address, item.message)))
+    ordered = tuple(
+        sorted(violations, key=lambda item: (item.code, item.address, item.message))
+    )
     return PolicyReport(not ordered, len(changes), ordered)
 
 
-def _check_security_group(address: str, after: dict[str, Any], violations: list[Violation]) -> None:
+def _check_security_group(
+    address: str, after: dict[str, Any], violations: list[Violation]
+) -> None:
     ingress = after.get("ingress", [])
     if not isinstance(ingress, list):
         raise TypeError(f"{address}: ingress must be a list")
@@ -125,7 +142,9 @@ def _check_security_group(address: str, after: dict[str, Any], violations: list[
         cidrs = [*rule.get("cidr_blocks", []), *rule.get("ipv6_cidr_blocks", [])]
         if "0.0.0.0/0" in cidrs or "::/0" in cidrs:
             violations.append(
-                Violation("public_security_group_ingress", address, "public IPv4/IPv6 ingress")
+                Violation(
+                    "public_security_group_ingress", address, "public IPv4/IPv6 ingress"
+                )
             )
 
 
@@ -146,18 +165,28 @@ def _check_iam_policy(address: str, raw: Any, violations: list[Violation]) -> No
         resources = _as_list(statement.get("Resource"))
         if any(value == "*" or value.endswith(":*") for value in actions):
             violations.append(
-                Violation("iam_wildcard_action", address, "Allow statement has wildcard action")
+                Violation(
+                    "iam_wildcard_action",
+                    address,
+                    "Allow statement has wildcard action",
+                )
             )
         if "*" in resources:
             violations.append(
-                Violation("iam_wildcard_resource", address, "Allow statement has wildcard resource")
+                Violation(
+                    "iam_wildcard_resource",
+                    address,
+                    "Allow statement has wildcard resource",
+                )
             )
 
 
 def _require_true_fields(address, after, fields, code, violations):
     missing = [field for field in fields if after.get(field) is not True]
     if missing:
-        violations.append(Violation(code, address, f"fields not true: {','.join(missing)}"))
+        violations.append(
+            Violation(code, address, f"fields not true: {','.join(missing)}")
+        )
 
 
 def _nested_first(after: dict[str, Any], collection: str, field: str) -> Any:
@@ -174,7 +203,11 @@ def _nested_encryption_algorithm(after: dict[str, Any]) -> Any:
     if not isinstance(rules, list) or not rules:
         return None
     defaults = rules[0].get("apply_server_side_encryption_by_default")
-    return defaults[0].get("sse_algorithm") if isinstance(defaults, list) and defaults else None
+    return (
+        defaults[0].get("sse_algorithm")
+        if isinstance(defaults, list) and defaults
+        else None
+    )
 
 
 def _as_list(value: Any) -> list[str]:
