@@ -119,7 +119,7 @@ resource "aws_cloudwatch_metric_alarm" "rejected_packets" {
   alarm_description   = "Rejected VPC packets exceeded the calibrated operational threshold."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
-  datapoints_to_alarm  = 2
+  datapoints_to_alarm = 2
   metric_name         = aws_cloudwatch_log_metric_filter.rejected_packets.metric_transformation[0].name
   namespace           = aws_cloudwatch_log_metric_filter.rejected_packets.metric_transformation[0].namespace
   period              = 300
@@ -135,7 +135,7 @@ resource "aws_cloudwatch_metric_alarm" "flow_log_delivery" {
   alarm_description   = "VPC Flow Logs emitted SKIPDATA records; network evidence may be incomplete."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  datapoints_to_alarm  = 1
+  datapoints_to_alarm = 1
   metric_name         = aws_cloudwatch_log_metric_filter.skipped_flow_records.metric_transformation[0].name
   namespace           = aws_cloudwatch_log_metric_filter.skipped_flow_records.metric_transformation[0].namespace
   period              = 300
