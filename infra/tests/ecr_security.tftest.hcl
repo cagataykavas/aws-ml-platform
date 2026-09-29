@@ -13,7 +13,7 @@ variables {
 }
 
 run "secure_ecr_contract" {
-  command = plan
+  command = apply
 
   assert {
     condition     = aws_ecr_repository.inference.image_tag_mutability == "IMMUTABLE"

@@ -13,8 +13,9 @@ identity.
 - The newest 30 `release-*` images remain available for rollback.
 - Untagged intermediate images expire after seven days to bound abandoned build storage.
 
-`infra/tests/ecr_security.tftest.hcl` evaluates these properties from a Terraform plan with a mocked
-AWS provider. It needs no cloud credentials and catches a weakened configuration before apply.
+`infra/tests/ecr_security.tftest.hcl` evaluates these properties in an isolated Terraform test with
+a mocked AWS provider. It needs no cloud credentials, creates no AWS resources and catches a
+weakened configuration before a real apply.
 
 ## Deployment contract
 
