@@ -1,0 +1,27 @@
+name: ecr-contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecr-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Initialize provider schema without a backend
+        run: terraform -chdir=infra init -backend=false -input=false
+      - name: Verify ECR security and retention contract
+        run: terraform -chdir=infra test -filter=tests/ecr_security.tftest.hcl
