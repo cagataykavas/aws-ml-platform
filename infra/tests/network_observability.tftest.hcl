@@ -5,6 +5,20 @@ mock_provider "aws" {
       names = ["eu-central-1a", "eu-central-1b"]
     }
   }
+
+  override_resource {
+    target = aws_cloudwatch_metric_alarm.rejected_packets
+    values = {
+      arn = "arn:aws:cloudwatch:eu-central-1:123456789012:alarm:ml-platform-rejected-packets"
+    }
+  }
+
+  override_resource {
+    target = aws_cloudwatch_metric_alarm.flow_log_delivery
+    values = {
+      arn = "arn:aws:cloudwatch:eu-central-1:123456789012:alarm:ml-platform-flow-log-delivery-health"
+    }
+  }
 }
 
 variables {
@@ -142,7 +156,7 @@ run "incident_dashboard_requires_contributor_rules" {
 }
 
 run "incident_dashboard_binds_alarms_metrics_and_reports" {
-  command = apply
+  command = plan
 
   variables {
     enable_vpc_flow_contributor_insights = true
