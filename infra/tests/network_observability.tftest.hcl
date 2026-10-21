@@ -112,3 +112,96 @@ run "contributor_rules_preserve_rejected_flow_dimensions" {
     error_message = "The output must expose both enabled rule names for runbook integration."
   }
 }
+
+run "incident_dashboard_is_explicitly_opted_out" {
+  command = plan
+
+  variables {
+    enable_vpc_flow_contributor_insights = true
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.network_incident) == 0
+    error_message = "The incident dashboard must remain off unless explicitly enabled."
+  }
+
+  assert {
+    condition     = output.network_incident_dashboard == null
+    error_message = "The dashboard output must be null while the dashboard is disabled."
+  }
+}
+
+run "incident_dashboard_requires_contributor_rules" {
+  command = plan
+
+  variables {
+    enable_network_incident_dashboard = true
+  }
+
+  expect_failures = [aws_cloudwatch_dashboard.network_incident]
+}
+
+run "incident_dashboard_binds_alarms_metrics_and_reports" {
+  command = apply
+
+  variables {
+    enable_vpc_flow_contributor_insights = true
+    enable_network_incident_dashboard    = true
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.network_incident) == 1
+    error_message = "The dashboard opt-in must create exactly one dashboard."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).start == "-PT6H"
+      && length(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets) == 7
+    )
+    error_message = "The dashboard must retain the bounded six-hour window and seven-widget incident layout."
+  }
+
+  assert {
+    condition = jsondecode(
+      aws_cloudwatch_dashboard.network_incident[0].dashboard_body
+    ).widgets[1].properties.annotations.alarms == [
+      aws_cloudwatch_metric_alarm.rejected_packets.arn,
+      aws_cloudwatch_metric_alarm.flow_log_delivery.arn,
+    ]
+    error_message = "The alarm-state widget must bind both rejection and telemetry-delivery alarms."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[2].properties.metrics[0][1] == "RejectedPackets"
+      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[3].properties.metrics[0][1] == "SkippedFlowRecords"
+    )
+    error_message = "The dashboard must expose rejection volume and flow-log delivery gaps separately."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[4].properties.metrics[0][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-sources\", \"MaxContributorValue\")"
+      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[4].properties.metrics[1][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-sources\", \"UniqueContributors\")"
+      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[5].properties.metrics[0][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-destinations\", \"MaxContributorValue\")"
+      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[5].properties.metrics[1][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-destinations\", \"UniqueContributors\")"
+    )
+    error_message = "Both contributor widgets must show top-contributor concentration and unique-cardinality signals."
+  }
+
+  assert {
+    condition = alltrue([
+      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "ticket ID"),
+      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "security-group"),
+      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "route-table"),
+      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "evidence incomplete"),
+    ])
+    error_message = "The dashboard must retain the minimum incident-record and evidence-quality checklist."
+  }
+
+  assert {
+    condition     = output.network_incident_dashboard.name == "ml-platform-network-incidents"
+    error_message = "The output must expose the governed dashboard name for runbook integration."
+  }
+}

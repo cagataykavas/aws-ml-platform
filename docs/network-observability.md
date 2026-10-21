@@ -29,6 +29,24 @@ Both rules require `action = REJECT` and `log_status = OK`, so incomplete `SKIPD
 distort the ranking. Their names are exported through `vpc_flow_contributor_insight_rules` for use
 in dashboards and incident runbooks.
 
+Set both observability flags to add the incident view:
+
+```hcl
+enable_vpc_flow_contributor_insights = true
+enable_network_incident_dashboard    = true
+```
+
+The dashboard is fail-closed: it cannot be enabled without the contributor rules. It places the
+two alarm states, rejected-packet volume, telemetry gaps and the source/destination contributor
+signals in one bounded six-hour view. Each contributor panel compares the top contributor's packet
+total with the number of unique contributor tuples, so an operator can distinguish one dominant
+source or destination from a broad scan without copying high-cardinality addresses into metrics.
+
+The final widget is an incident-record checklist. It requires a ticket and time window, an explicit
+telemetry-completeness decision and the security-group, route-table or endpoint-policy change ID
+associated with the spike. The dashboard does not persist the incident record; the operator must
+write those fields into the organization's governed incident system.
+
 Alarm actions are explicit inputs rather than placeholder resources:
 
 ```hcl
@@ -39,9 +57,11 @@ The empty default keeps pull-request validation credential-free. A deployment en
 wire the list to a governed SNS/incident route and calibrate `rejected_packet_alarm_threshold` from
 known-good traffic.
 
-Contributor Insights is disabled by default because enabled rules incur per-event analysis charges
-and analyze only new records. Enable it deliberately in environments where the faster attribution
-justifies that cost; the rules target one exact log group rather than a wildcard.
+Contributor Insights and the dashboard are disabled by default because enabled rules incur
+per-event analysis charges and dashboards can add account-level cost. Enable them deliberately in
+environments where faster attribution justifies that cost; the rules target one exact log group
+rather than a wildcard. Dashboard viewers need permission to read the dashboard, alarm/metric data
+and Contributor Insights reports.
 
 ## Limits and trust boundary
 

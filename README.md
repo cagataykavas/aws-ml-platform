@@ -95,6 +95,7 @@ infra/
 ├── networking.tf     # VPC, subnets, routing and VPC endpoints
 ├── security.tf       # S3, KMS, Secrets Manager and IAM
 ├── observability.tf  # VPC Flow Logs, metrics, alarms and contributor rules
+├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 ```
 

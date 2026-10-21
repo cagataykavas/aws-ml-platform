@@ -65,3 +65,24 @@ variable "enable_vpc_flow_contributor_insights" {
   default     = false
   description = "Enable two chargeable Contributor Insights rules for top rejected sources and destinations."
 }
+
+variable "enable_network_incident_dashboard" {
+  type        = bool
+  default     = false
+  description = "Enable the CloudWatch network incident dashboard; requires VPC Flow Contributor Insights."
+}
+
+variable "network_incident_dashboard_name" {
+  type        = string
+  default     = "ml-platform-network-incidents"
+  description = "CloudWatch dashboard name used for rejected-flow incident triage."
+
+  validation {
+    condition = (
+      length(var.network_incident_dashboard_name) >= 1
+      && length(var.network_incident_dashboard_name) <= 255
+      && can(regex("^[A-Za-z0-9_-]+$", var.network_incident_dashboard_name))
+    )
+    error_message = "network_incident_dashboard_name must be 1-255 characters containing only letters, numbers, hyphens and underscores."
+  }
+}

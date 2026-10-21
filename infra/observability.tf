@@ -1,4 +1,9 @@
 locals {
+  rejected_flow_rule_names = {
+    sources      = "ml-platform-rejected-sources"
+    destinations = "ml-platform-rejected-destinations"
+  }
+
   vpc_flow_log_format = join(" ", [
     "$${version}",
     "$${account-id}",
@@ -147,7 +152,7 @@ resource "aws_cloudwatch_log_metric_filter" "skipped_flow_records" {
 resource "aws_cloudwatch_contributor_insight_rule" "rejected_sources" {
   count = var.enable_vpc_flow_contributor_insights ? 1 : 0
 
-  rule_name  = "ml-platform-rejected-sources"
+  rule_name  = local.rejected_flow_rule_names.sources
   rule_state = "ENABLED"
   rule_definition = jsonencode({
     Schema = {
@@ -169,7 +174,7 @@ resource "aws_cloudwatch_contributor_insight_rule" "rejected_sources" {
 resource "aws_cloudwatch_contributor_insight_rule" "rejected_destinations" {
   count = var.enable_vpc_flow_contributor_insights ? 1 : 0
 
-  rule_name  = "ml-platform-rejected-destinations"
+  rule_name  = local.rejected_flow_rule_names.destinations
   rule_state = "ENABLED"
   rule_definition = jsonencode({
     Schema = {
