@@ -80,19 +80,23 @@ Every push and pull request runs:
 terraform fmt -check -diff
 terraform init -backend=false -input=false
 terraform validate
+terraform test
 ```
 
-This verifies formatting, provider installation and Terraform/provider-schema coherence without placing AWS credentials in pull-request CI. It does **not** claim that a credential-free validation proves a live AWS deployment will succeed.
+This verifies formatting, provider installation, Terraform/provider-schema coherence and mocked plan contracts without placing AWS credentials in pull-request CI. It does **not** claim that a credential-free validation proves a live AWS deployment will succeed.
 
 ## Files
 
 ```text
 infra/
-├── versions.tf      # Terraform/AWS provider configuration
-├── variables.tf     # explicit external integration inputs
-├── networking.tf    # VPC, subnets, routing and VPC endpoints
-├── security.tf      # S3, KMS, Secrets Manager and IAM
-└── autoscaling.tf   # ECS scaling, logs and ALB alarms
+├── tests/            # credential-free mocked plan contracts
+├── versions.tf       # Terraform/AWS provider configuration
+├── variables.tf      # explicit external integration inputs
+├── networking.tf     # VPC, subnets, routing and VPC endpoints
+├── security.tf       # S3, KMS, Secrets Manager and IAM
+├── observability.tf  # VPC Flow Logs, metrics, alarms and contributor rules
+├── dashboard.tf      # opt-in network incident triage dashboard
+└── autoscaling.tf    # ECS scaling, logs and ALB alarms
 ```
 
 ## Broader AWS service map
