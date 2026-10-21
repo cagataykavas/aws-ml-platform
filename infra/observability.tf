@@ -17,6 +17,36 @@ locals {
     "$${flow-direction}",
     "$${traffic-path}",
   ])
+
+  vpc_flow_log_fields = {
+    "1"  = "version"
+    "2"  = "account_id"
+    "3"  = "interface_id"
+    "4"  = "srcaddr"
+    "5"  = "dstaddr"
+    "6"  = "srcport"
+    "7"  = "dstport"
+    "8"  = "protocol"
+    "9"  = "packets"
+    "10" = "bytes"
+    "11" = "start"
+    "12" = "end"
+    "13" = "action"
+    "14" = "log_status"
+    "15" = "flow_direction"
+    "16" = "traffic_path"
+  }
+
+  rejected_flow_filters = [
+    {
+      Match = "action"
+      In    = ["REJECT"]
+    },
+    {
+      Match = "log_status"
+      In    = ["OK"]
+    },
+  ]
 }
 
 resource "aws_cloudwatch_log_group" "vpc_flow" {
@@ -114,6 +144,50 @@ resource "aws_cloudwatch_log_metric_filter" "skipped_flow_records" {
   }
 }
 
+resource "aws_cloudwatch_contributor_insight_rule" "rejected_sources" {
+  count = var.enable_vpc_flow_contributor_insights ? 1 : 0
+
+  rule_name  = "ml-platform-rejected-sources"
+  rule_state = "ENABLED"
+  rule_definition = jsonencode({
+    Schema = {
+      Name    = "CloudWatchLogRule"
+      Version = 1
+    }
+    LogGroupNames = [aws_cloudwatch_log_group.vpc_flow.name]
+    LogFormat     = "CLF"
+    Fields        = local.vpc_flow_log_fields
+    Contribution = {
+      Keys    = ["srcaddr", "interface_id", "flow_direction"]
+      ValueOf = "packets"
+      Filters = local.rejected_flow_filters
+    }
+    AggregateOn = "Sum"
+  })
+}
+
+resource "aws_cloudwatch_contributor_insight_rule" "rejected_destinations" {
+  count = var.enable_vpc_flow_contributor_insights ? 1 : 0
+
+  rule_name  = "ml-platform-rejected-destinations"
+  rule_state = "ENABLED"
+  rule_definition = jsonencode({
+    Schema = {
+      Name    = "CloudWatchLogRule"
+      Version = 1
+    }
+    LogGroupNames = [aws_cloudwatch_log_group.vpc_flow.name]
+    LogFormat     = "CLF"
+    Fields        = local.vpc_flow_log_fields
+    Contribution = {
+      Keys    = ["dstaddr", "dstport", "protocol"]
+      ValueOf = "packets"
+      Filters = local.rejected_flow_filters
+    }
+    AggregateOn = "Sum"
+  })
+}
+
 resource "aws_cloudwatch_metric_alarm" "rejected_packets" {
   alarm_name          = "ml-platform-rejected-packets"
   alarm_description   = "Rejected VPC packets exceeded the calibrated operational threshold."
@@ -154,4 +228,12 @@ output "vpc_flow_log_id" {
 output "vpc_flow_log_group" {
   value       = aws_cloudwatch_log_group.vpc_flow.name
   description = "CloudWatch log group retaining structured VPC network evidence."
+}
+
+output "vpc_flow_contributor_insight_rules" {
+  value = concat(
+    aws_cloudwatch_contributor_insight_rule.rejected_sources[*].rule_name,
+    aws_cloudwatch_contributor_insight_rule.rejected_destinations[*].rule_name,
+  )
+  description = "Enabled Contributor Insights rules for rejected-flow triage; empty when the opt-in is disabled."
 }

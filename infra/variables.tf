@@ -59,3 +59,9 @@ variable "network_alarm_actions" {
     error_message = "network_alarm_actions entries must be AWS ARNs."
   }
 }
+
+variable "enable_vpc_flow_contributor_insights" {
+  type        = bool
+  default     = false
+  description = "Enable two chargeable Contributor Insights rules for top rejected sources and destinations."
+}
