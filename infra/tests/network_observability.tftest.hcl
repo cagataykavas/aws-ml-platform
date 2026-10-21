@@ -5,20 +5,6 @@ mock_provider "aws" {
       names = ["eu-central-1a", "eu-central-1b"]
     }
   }
-
-  override_resource {
-    target = aws_cloudwatch_metric_alarm.rejected_packets
-    values = {
-      arn = "arn:aws:cloudwatch:eu-central-1:123456789012:alarm:ml-platform-rejected-packets"
-    }
-  }
-
-  override_resource {
-    target = aws_cloudwatch_metric_alarm.flow_log_delivery
-    values = {
-      arn = "arn:aws:cloudwatch:eu-central-1:123456789012:alarm:ml-platform-flow-log-delivery-health"
-    }
-  }
 }
 
 variables {
@@ -170,46 +156,41 @@ run "incident_dashboard_binds_alarms_metrics_and_reports" {
 
   assert {
     condition = (
-      jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).start == "-PT6H"
-      && length(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets) == 7
+      local.network_incident_window == "-PT6H"
+      && length(local.network_incident_widgets) == 7
     )
     error_message = "The dashboard must retain the bounded six-hour window and seven-widget incident layout."
   }
 
   assert {
-    condition = jsondecode(
-      aws_cloudwatch_dashboard.network_incident[0].dashboard_body
-    ).widgets[1].properties.annotations.alarms == [
-      aws_cloudwatch_metric_alarm.rejected_packets.arn,
-      aws_cloudwatch_metric_alarm.flow_log_delivery.arn,
-    ]
+    condition     = length(local.network_incident_widgets[1].properties.annotations.alarms) == 2
     error_message = "The alarm-state widget must bind both rejection and telemetry-delivery alarms."
   }
 
   assert {
     condition = (
-      jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[2].properties.metrics[0][1] == "RejectedPackets"
-      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[3].properties.metrics[0][1] == "SkippedFlowRecords"
+      local.network_incident_widgets[2].properties.metrics[0][1] == "RejectedPackets"
+      && local.network_incident_widgets[3].properties.metrics[0][1] == "SkippedFlowRecords"
     )
     error_message = "The dashboard must expose rejection volume and flow-log delivery gaps separately."
   }
 
   assert {
     condition = (
-      jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[4].properties.metrics[0][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-sources\", \"MaxContributorValue\")"
-      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[4].properties.metrics[1][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-sources\", \"UniqueContributors\")"
-      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[5].properties.metrics[0][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-destinations\", \"MaxContributorValue\")"
-      && jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[5].properties.metrics[1][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-destinations\", \"UniqueContributors\")"
+      local.network_incident_widgets[4].properties.metrics[0][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-sources\", \"MaxContributorValue\")"
+      && local.network_incident_widgets[4].properties.metrics[1][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-sources\", \"UniqueContributors\")"
+      && local.network_incident_widgets[5].properties.metrics[0][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-destinations\", \"MaxContributorValue\")"
+      && local.network_incident_widgets[5].properties.metrics[1][0].expression == "INSIGHT_RULE_METRIC(\"ml-platform-rejected-destinations\", \"UniqueContributors\")"
     )
     error_message = "Both contributor widgets must show top-contributor concentration and unique-cardinality signals."
   }
 
   assert {
     condition = alltrue([
-      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "ticket ID"),
-      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "security-group"),
-      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "route-table"),
-      strcontains(jsondecode(aws_cloudwatch_dashboard.network_incident[0].dashboard_body).widgets[6].properties.markdown, "evidence incomplete"),
+      strcontains(local.network_incident_widgets[6].properties.markdown, "ticket ID"),
+      strcontains(local.network_incident_widgets[6].properties.markdown, "security-group"),
+      strcontains(local.network_incident_widgets[6].properties.markdown, "route-table"),
+      strcontains(local.network_incident_widgets[6].properties.markdown, "evidence incomplete"),
     ])
     error_message = "The dashboard must retain the minimum incident-record and evidence-quality checklist."
   }

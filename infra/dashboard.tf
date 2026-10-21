@@ -1,4 +1,6 @@
 locals {
+  network_incident_window = "-PT6H"
+
   network_incident_widgets = [
     {
       type   = "text"
@@ -158,7 +160,7 @@ resource "aws_cloudwatch_dashboard" "network_incident" {
 
   dashboard_name = var.network_incident_dashboard_name
   dashboard_body = jsonencode({
-    start          = "-PT6H"
+    start          = local.network_incident_window
     periodOverride = "inherit"
     widgets        = local.network_incident_widgets
   })
