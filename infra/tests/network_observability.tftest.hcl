@@ -21,14 +21,14 @@ mock_provider "aws" {
   }
 
   override_resource {
-    target = aws_kms_key.network_incidents
+    target = aws_kms_key.network_incidents[0]
     values = {
       arn = "arn:aws:kms:eu-central-1:123456789012:key/test-network-incidents"
     }
   }
 
   override_resource {
-    target = aws_sns_topic.network_incidents
+    target = aws_sns_topic.network_incidents[0]
     values = {
       arn = "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
     }
