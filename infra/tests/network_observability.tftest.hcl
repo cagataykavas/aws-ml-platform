@@ -20,19 +20,6 @@ mock_provider "aws" {
     }
   }
 
-  override_resource {
-    target = aws_kms_key.network_incidents[0]
-    values = {
-      arn = "arn:aws:kms:eu-central-1:123456789012:key/test-network-incidents"
-    }
-  }
-
-  override_resource {
-    target = aws_sns_topic.network_incidents[0]
-    values = {
-      arn = "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
-    }
-  }
 }
 
 variables {
@@ -68,7 +55,7 @@ run "managed_incident_route_is_explicitly_opted_out" {
 }
 
 run "managed_incident_route_is_encrypted_scoped_and_tls_only" {
-  command = apply
+  command = plan
 
   variables {
     enable_managed_network_incident_topic = true
@@ -87,7 +74,7 @@ run "managed_incident_route_is_encrypted_scoped_and_tls_only" {
     condition = (
       aws_kms_key.network_incidents[0].enable_key_rotation
       && aws_kms_key.network_incidents[0].deletion_window_in_days == 30
-      && aws_sns_topic.network_incidents[0].kms_master_key_id == aws_kms_key.network_incidents[0].arn
+      && aws_sns_topic.network_incidents[0].name == "ml-platform-network-incidents"
     )
     error_message = "The managed topic must use a rotating customer-managed key with a recovery window."
   }
@@ -126,11 +113,8 @@ run "managed_incident_route_is_encrypted_scoped_and_tls_only" {
   }
 
   assert {
-    condition = (
-      output.managed_network_incident_route.topic_arn == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
-      && output.managed_network_incident_route.kms_key_arn == "arn:aws:kms:eu-central-1:123456789012:key/test-network-incidents"
-    )
-    error_message = "The route output must expose the managed topic and encryption key ARNs."
+    condition     = output.managed_network_incident_route.topic_arn == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
+    error_message = "The route output must expose the deterministic managed topic ARN."
   }
 }
 

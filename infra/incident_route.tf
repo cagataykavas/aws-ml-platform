@@ -10,7 +10,7 @@ locals {
   managed_network_incident_topic_arn = "arn:${data.aws_partition.current.partition}:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.managed_network_incident_topic_name}"
   network_alarm_action_arns = distinct(concat(
     var.network_alarm_actions,
-    aws_sns_topic.network_incidents[*].arn,
+    var.enable_managed_network_incident_topic ? [local.managed_network_incident_topic_arn] : [],
   ))
 }
 
@@ -126,7 +126,7 @@ resource "aws_sns_topic_policy" "network_incidents" {
 
 output "managed_network_incident_route" {
   value = var.enable_managed_network_incident_topic ? {
-    topic_arn   = aws_sns_topic.network_incidents[0].arn
+    topic_arn   = local.managed_network_incident_topic_arn
     kms_key_arn = aws_kms_key.network_incidents[0].arn
   } : null
   description = "Encrypted managed alarm route; null when the opt-in is disabled."
