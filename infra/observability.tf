@@ -205,8 +205,10 @@ resource "aws_cloudwatch_metric_alarm" "rejected_packets" {
   statistic           = "Sum"
   threshold           = var.rejected_packet_alarm_threshold
   treat_missing_data  = "notBreaching"
-  alarm_actions       = var.network_alarm_actions
-  ok_actions          = var.network_alarm_actions
+  alarm_actions       = local.network_alarm_action_arns
+  ok_actions          = local.network_alarm_action_arns
+
+  depends_on = [aws_sns_topic_policy.network_incidents]
 }
 
 resource "aws_cloudwatch_metric_alarm" "flow_log_delivery" {
@@ -221,8 +223,10 @@ resource "aws_cloudwatch_metric_alarm" "flow_log_delivery" {
   statistic           = "Sum"
   threshold           = 0
   treat_missing_data  = "notBreaching"
-  alarm_actions       = var.network_alarm_actions
-  ok_actions          = var.network_alarm_actions
+  alarm_actions       = local.network_alarm_action_arns
+  ok_actions          = local.network_alarm_action_arns
+
+  depends_on = [aws_sns_topic_policy.network_incidents]
 }
 
 output "vpc_flow_log_id" {

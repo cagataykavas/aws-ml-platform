@@ -60,6 +60,27 @@ variable "network_alarm_actions" {
   }
 }
 
+variable "enable_managed_network_incident_topic" {
+  type        = bool
+  default     = false
+  description = "Create a KMS-encrypted SNS topic and attach it to both network alarms."
+}
+
+variable "managed_network_incident_topic_name" {
+  type        = string
+  default     = "ml-platform-network-incidents"
+  description = "Name of the optional managed SNS topic for network alarm state changes."
+
+  validation {
+    condition = (
+      length(var.managed_network_incident_topic_name) >= 1
+      && length(var.managed_network_incident_topic_name) <= 256
+      && can(regex("^[A-Za-z0-9_-]+$", var.managed_network_incident_topic_name))
+    )
+    error_message = "managed_network_incident_topic_name must be 1-256 characters containing only letters, numbers, hyphens and underscores."
+  }
+}
+
 variable "enable_vpc_flow_contributor_insights" {
   type        = bool
   default     = false

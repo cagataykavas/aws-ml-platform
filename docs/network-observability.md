@@ -57,6 +57,18 @@ The empty default keeps pull-request validation credential-free. A deployment en
 wire the list to a governed SNS/incident route and calibrate `rejected_packet_alarm_threshold` from
 known-good traffic.
 
+Alternatively, set `enable_managed_network_incident_topic = true` to attach both ALARM and OK
+transitions to a repository-managed SNS topic. The topic uses a dedicated rotating customer-managed
+KMS key. Its resource policy permits `SNS:Publish` only from the two exact CloudWatch alarm ARNs in
+the current account and denies every non-TLS request. The KMS grant is independently scoped to the
+same account, alarm ARNs and exact SNS encryption context. Existing `network_alarm_actions` remain
+attached and duplicate action ARNs are removed.
+
+The managed topic is an integration boundary, not an incident system by itself. Connect the
+exported topic ARN to a governed subscriber and test delivery, retries and subscriber-side access
+controls in the target environment. Enabling the topic creates KMS and SNS costs; disabling it
+preserves the zero-resource default.
+
 Contributor Insights and the dashboard are disabled by default because enabled rules incur
 per-event analysis charges and dashboards can add account-level cost. Enable them deliberately in
 environments where faster attribution justifies that cost; the rules target one exact log group
