@@ -68,7 +68,7 @@ run "managed_incident_route_is_explicitly_opted_out" {
 }
 
 run "managed_incident_route_is_encrypted_scoped_and_tls_only" {
-  command = plan
+  command = apply
 
   variables {
     enable_managed_network_incident_topic = true
