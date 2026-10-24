@@ -20,6 +20,13 @@ mock_provider "aws" {
     }
   }
 
+  override_resource {
+    target = aws_kms_key.network_incidents
+    values = {
+      arn = "arn:aws:kms:eu-central-1:123456789012:key/network-incident-test"
+    }
+  }
+
 }
 
 variables {
