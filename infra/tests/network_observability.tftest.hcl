@@ -179,6 +179,19 @@ run "managed_incident_queue_rejects_malformed_consumer_arns" {
   expect_failures = [var.managed_network_incident_consumer_role_arn]
 }
 
+run "managed_incident_queue_rejects_derived_names_over_the_sqs_limit" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic       = true
+    enable_managed_network_incident_queue       = true
+    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_topic_name         = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
 run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
   command = plan
 
