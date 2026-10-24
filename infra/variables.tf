@@ -117,6 +117,21 @@ variable "managed_network_incident_max_receive_count" {
   }
 }
 
+variable "managed_network_incident_queue_age_threshold_seconds" {
+  type        = number
+  default     = 300
+  description = "Oldest visible incident-message age that indicates a stalled consumer."
+
+  validation {
+    condition = (
+      var.managed_network_incident_queue_age_threshold_seconds >= 60
+      && var.managed_network_incident_queue_age_threshold_seconds <= 86400
+      && floor(var.managed_network_incident_queue_age_threshold_seconds) == var.managed_network_incident_queue_age_threshold_seconds
+    )
+    error_message = "managed_network_incident_queue_age_threshold_seconds must be an integer from 60 to 86400."
+  }
+}
+
 variable "enable_vpc_flow_contributor_insights" {
   type        = bool
   default     = false

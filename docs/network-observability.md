@@ -72,10 +72,11 @@ preserves the zero-resource default.
 For a durable repository-managed boundary, enable the queue and declare its only consumer role:
 
 ```hcl
-enable_managed_network_incident_topic       = true
-enable_managed_network_incident_queue       = true
-managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
-managed_network_incident_max_receive_count = 5
+enable_managed_network_incident_topic                    = true
+enable_managed_network_incident_queue                    = true
+managed_network_incident_consumer_role_arn               = "arn:aws:iam::123456789012:role/network-incident-consumer"
+managed_network_incident_max_receive_count               = 5
+managed_network_incident_queue_age_threshold_seconds = 300
 ```
 
 This creates a customer-key-encrypted SQS subscription plus an encrypted 14-day dead-letter queue.
@@ -85,6 +86,18 @@ access. The KMS policy independently permits scoped SNS encryption and limits th
 decrypting the two queue encryption contexts. Messages move to the DLQ when either SNS cannot
 deliver them or the consumer exceeds the configured receive count; the SNS envelope is retained so
 operators can distinguish alarm metadata from the payload.
+
+Two queue-health alarms close the silent-failure gap. The consumer alarm requires the oldest visible
+message to remain above the configured age for three consecutive one-minute periods; a transient
+burst therefore does not page. The dead-letter alarm changes state as soon as any failed message is
+visible. Both alarms treat missing metrics as healthy and send ALARM and OK transitions through the
+same encrypted topic. Their exact ARNs are added to the SNS and KMS resource policies rather than
+granting CloudWatch wildcard publication.
+
+Because queue-health notifications also enter the managed queue, a deployment must attach an
+independent paging subscriber to the exported topic. A stalled queue consumer cannot be its own
+only notification path. The alarms detect backlog symptoms; they do not automatically redrive or
+delete messages.
 
 The queue fails closed unless the managed topic and consumer role are both supplied. It does not
 create the consumer workload, automated redrive, paging workflow or cross-account access. Those

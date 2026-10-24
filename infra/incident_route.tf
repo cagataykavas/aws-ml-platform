@@ -3,9 +3,13 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  managed_network_incident_alarm_arns = [
-    "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:ml-platform-rejected-packets",
-    "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:ml-platform-flow-log-delivery-health",
+  managed_network_incident_queue_alarm_names = [
+    "${var.managed_network_incident_topic_name}-consumer-age",
+    "${var.managed_network_incident_topic_name}-consumer-dlq",
+  ]
+  managed_network_incident_base_alarm_names = [
+    "ml-platform-rejected-packets",
+    "ml-platform-flow-log-delivery-health",
   ]
   managed_network_incident_topic_arn = "arn:${data.aws_partition.current.partition}:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.managed_network_incident_topic_name}"
   managed_network_incident_queue_arn = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.managed_network_incident_topic_name}-consumer"
@@ -23,6 +27,14 @@ locals {
     && var.enable_managed_network_incident_topic
     && var.managed_network_incident_consumer_role_arn != null
   )
+  managed_network_incident_alarm_names = concat(
+    local.managed_network_incident_base_alarm_names,
+    local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_alarm_names : [],
+  )
+  managed_network_incident_alarm_arns = [
+    for name in local.managed_network_incident_alarm_names :
+    "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:${name}"
+  ]
   network_alarm_action_arns = distinct(concat(
     var.network_alarm_actions,
     var.enable_managed_network_incident_topic ? [local.managed_network_incident_topic_arn] : [],
@@ -331,12 +343,61 @@ resource "aws_sns_topic_subscription" "network_incident_queue" {
   depends_on = [aws_sqs_queue_policy.network_incident_queues]
 }
 
+resource "aws_cloudwatch_metric_alarm" "network_incident_queue_age" {
+  count = local.managed_network_incident_queue_enabled ? 1 : 0
+
+  alarm_name          = local.managed_network_incident_queue_alarm_names[0]
+  alarm_description   = "The oldest incident notification has exceeded its bounded processing age."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = var.managed_network_incident_queue_age_threshold_seconds
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [local.managed_network_incident_topic_arn]
+  ok_actions          = [local.managed_network_incident_topic_arn]
+
+  dimensions = {
+    QueueName = aws_sqs_queue.network_incidents[0].name
+  }
+
+  depends_on = [aws_sns_topic_policy.network_incidents]
+}
+
+resource "aws_cloudwatch_metric_alarm" "network_incident_dead_letters" {
+  count = local.managed_network_incident_queue_enabled ? 1 : 0
+
+  alarm_name          = local.managed_network_incident_queue_alarm_names[1]
+  alarm_description   = "The incident dead-letter queue contains at least one visible message."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [local.managed_network_incident_topic_arn]
+  ok_actions          = [local.managed_network_incident_topic_arn]
+
+  dimensions = {
+    QueueName = aws_sqs_queue.network_incident_dlq[0].name
+  }
+
+  depends_on = [aws_sns_topic_policy.network_incidents]
+}
+
 output "managed_network_incident_route" {
   value = var.enable_managed_network_incident_topic ? {
     topic_arn             = local.managed_network_incident_topic_arn
     kms_key_arn           = aws_kms_key.network_incidents[0].arn
     queue_arn             = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_arn : null
     dead_letter_queue_arn = local.managed_network_incident_queue_enabled ? local.managed_network_incident_dlq_arn : null
+    queue_health_alarms   = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_alarm_names : []
   } : null
   description = "Encrypted managed alarm route and optional durable subscriber; null when disabled."
 }
