@@ -68,7 +68,7 @@ resource "aws_kms_key" "network_incidents" {
           }
         }
       }],
-      local.managed_network_incident_queue_enabled ? [{
+      [for statement in [{
         Sid    = "SnsEncryptedQueueDelivery"
         Effect = "Allow"
         Principal = {
@@ -100,7 +100,7 @@ resource "aws_kms_key" "network_incidents" {
             "kms:EncryptionContext:aws:sqs:arn" = local.managed_network_incident_queue_arns
           }
         }
-      }] : [],
+      }] : statement if local.managed_network_incident_queue_enabled],
     )
   })
 
