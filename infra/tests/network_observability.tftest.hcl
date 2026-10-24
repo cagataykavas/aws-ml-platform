@@ -20,13 +20,6 @@ mock_provider "aws" {
     }
   }
 
-  override_resource {
-    target = aws_kms_key.network_incidents
-    values = {
-      arn = "arn:aws:kms:eu-central-1:123456789012:key/network-incident-test"
-    }
-  }
-
 }
 
 variables {
@@ -209,11 +202,11 @@ run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
 
   assert {
     condition = (
-      aws_sqs_queue.network_incidents[0].kms_master_key_id == aws_kms_key.network_incidents[0].arn
-      && aws_sqs_queue.network_incident_dlq[0].kms_master_key_id == aws_kms_key.network_incidents[0].arn
+      aws_sqs_queue.network_incidents[0].kms_data_key_reuse_period_seconds == 300
+      && aws_sqs_queue.network_incident_dlq[0].kms_data_key_reuse_period_seconds == 300
       && aws_sqs_queue.network_incident_dlq[0].message_retention_seconds == 1209600
     )
-    error_message = "Both queues must use the route CMK and retain dead letters for 14 days."
+    error_message = "Both queues must bound KMS data-key reuse and retain dead letters for 14 days."
   }
 
   assert {
