@@ -26,6 +26,9 @@ flowchart LR
     ECS --> S3[(Versioned KMS-encrypted S3 artifacts)]
     ECS --> SM[Secrets Manager]
     ECS --> CW[CloudWatch Logs + alarms]
+    CW --> SNS[KMS-encrypted incident topic]
+    SNS --> SQS[Encrypted governed subscriber]
+    SQS --> DLQ[14-day dead-letter queue]
     IAM[Least-privilege ECS task role] --> ECS
 ```
 
@@ -95,7 +98,7 @@ infra/
 ├── networking.tf     # VPC, subnets, routing and VPC endpoints
 ├── security.tf       # S3, KMS, Secrets Manager and IAM
 ├── observability.tf  # VPC Flow Logs, metrics, alarms and contributor rules
-├── incident_route.tf # optional encrypted, scoped network-alarm destination
+├── incident_route.tf # optional encrypted topic, governed queue and dead-letter route
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 ```
