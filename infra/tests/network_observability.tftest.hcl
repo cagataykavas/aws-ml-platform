@@ -39,6 +39,8 @@ run "managed_incident_route_is_explicitly_opted_out" {
       && length(aws_sqs_queue.network_incidents) == 0
       && length(aws_sqs_queue.network_incident_dlq) == 0
       && length(aws_sns_topic_subscription.network_incident_queue) == 0
+      && length(aws_cloudwatch_metric_alarm.network_incident_queue_age) == 0
+      && length(aws_cloudwatch_metric_alarm.network_incident_dead_letters) == 0
     )
     error_message = "The managed incident route and subscriber must remain absent unless explicitly enabled."
   }
@@ -192,6 +194,16 @@ run "managed_incident_queue_rejects_derived_names_over_the_sqs_limit" {
   expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
 }
 
+run "managed_incident_queue_rejects_unbounded_age_thresholds" {
+  command = plan
+
+  variables {
+    managed_network_incident_queue_age_threshold_seconds = 86401
+  }
+
+  expect_failures = [var.managed_network_incident_queue_age_threshold_seconds]
+}
+
 run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
   command = plan
 
@@ -209,8 +221,47 @@ run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
       && length(aws_sqs_queue.network_incident_dlq) == 1
       && length(aws_sqs_queue_policy.network_incident_queues) == 2
       && length(aws_sns_topic_subscription.network_incident_queue) == 1
+      && length(aws_cloudwatch_metric_alarm.network_incident_queue_age) == 1
+      && length(aws_cloudwatch_metric_alarm.network_incident_dead_letters) == 1
     )
-    error_message = "Queue opt-in must create one subscriber, one DLQ, two policies and one subscription."
+    error_message = "Queue opt-in must create one subscriber, one DLQ, two policies, one subscription and two health alarms."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.network_incident_queue_age[0].metric_name == "ApproximateAgeOfOldestMessage"
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].dimensions.QueueName == "ml-platform-network-incidents-consumer"
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].threshold == 300
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].period == 60
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].evaluation_periods == 3
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].datapoints_to_alarm == 3
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].treat_missing_data == "notBreaching"
+    )
+    error_message = "The consumer-stall alarm must require a sustained, bounded oldest-message age."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].metric_name == "ApproximateNumberOfMessagesVisible"
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].dimensions.QueueName == "ml-platform-network-incidents-consumer-dlq"
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].threshold == 0
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].evaluation_periods == 1
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].datapoints_to_alarm == 1
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].treat_missing_data == "notBreaching"
+    )
+    error_message = "The dead-letter alarm must detect any visible failed notification without missing-data noise."
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.network_incident_queue_age[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].ok_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].ok_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
+      && length(jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[1].Condition.ArnEquals["aws:SourceArn"]) == 4
+      && length(jsondecode(aws_kms_key.network_incidents[0].policy).Statement[1].Condition.ArnEquals["aws:SourceArn"]) == 4
+    )
+    error_message = "Queue-health state changes must use the encrypted route with exact alarm ARN grants."
   }
 
   assert {
@@ -286,8 +337,12 @@ run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
     condition = (
       output.managed_network_incident_route.queue_arn == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"
       && output.managed_network_incident_route.dead_letter_queue_arn == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer-dlq"
+      && output.managed_network_incident_route.queue_health_alarms == tolist([
+        "ml-platform-network-incidents-consumer-age",
+        "ml-platform-network-incidents-consumer-dlq",
+      ])
     )
-    error_message = "The route output must expose both durable subscriber queue ARNs."
+    error_message = "The route output must expose both durable queue ARNs and their health alarm names."
   }
 }
 
