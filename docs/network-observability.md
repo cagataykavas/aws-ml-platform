@@ -69,6 +69,28 @@ exported topic ARN to a governed subscriber and test delivery, retries and subsc
 controls in the target environment. Enabling the topic creates KMS and SNS costs; disabling it
 preserves the zero-resource default.
 
+For a durable repository-managed boundary, enable the queue and declare its only consumer role:
+
+```hcl
+enable_managed_network_incident_topic       = true
+enable_managed_network_incident_queue       = true
+managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
+managed_network_incident_max_receive_count = 5
+```
+
+This creates a customer-key-encrypted SQS subscription plus an encrypted 14-day dead-letter queue.
+The queue policies accept `SendMessage` only from the exact managed topic in the current account,
+deny non-TLS requests and give the declared role receive/delete/visibility access without publish
+access. The KMS policy independently permits scoped SNS encryption and limits the consumer role to
+decrypting the two queue encryption contexts. Messages move to the DLQ when either SNS cannot
+deliver them or the consumer exceeds the configured receive count; the SNS envelope is retained so
+operators can distinguish alarm metadata from the payload.
+
+The queue fails closed unless the managed topic and consumer role are both supplied. It does not
+create the consumer workload, automated redrive, paging workflow or cross-account access. Those
+remain deployment-specific controls, and live delivery still needs a canary because mocked Terraform
+plans prove configuration shape rather than AWS runtime behavior.
+
 Contributor Insights and the dashboard are disabled by default because enabled rules incur
 per-event analysis charges and dashboards can add account-level cost. Enable them deliberately in
 environments where faster attribution justifies that cost; the rules target one exact log group

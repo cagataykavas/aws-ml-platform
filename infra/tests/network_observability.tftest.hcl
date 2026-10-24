@@ -36,8 +36,11 @@ run "managed_incident_route_is_explicitly_opted_out" {
       length(aws_kms_key.network_incidents) == 0
       && length(aws_sns_topic.network_incidents) == 0
       && length(aws_sns_topic_policy.network_incidents) == 0
+      && length(aws_sqs_queue.network_incidents) == 0
+      && length(aws_sqs_queue.network_incident_dlq) == 0
+      && length(aws_sns_topic_subscription.network_incident_queue) == 0
     )
-    error_message = "The managed incident route must remain absent unless explicitly enabled."
+    error_message = "The managed incident route and subscriber must remain absent unless explicitly enabled."
   }
 
   assert {
@@ -139,6 +142,152 @@ run "managed_route_preserves_and_deduplicates_external_actions" {
       )
     )
     error_message = "Managed routing must preserve external actions without duplicate deliveries."
+  }
+}
+
+run "managed_incident_queue_requires_the_managed_topic" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_queue       = true
+    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
+run "managed_incident_queue_requires_an_explicit_consumer" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic = true
+    enable_managed_network_incident_queue = true
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
+run "managed_incident_queue_rejects_malformed_consumer_arns" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic       = true
+    enable_managed_network_incident_queue       = true
+    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:user/not-a-role"
+  }
+
+  expect_failures = [var.managed_network_incident_consumer_role_arn]
+}
+
+run "managed_incident_queue_rejects_derived_names_over_the_sqs_limit" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic       = true
+    enable_managed_network_incident_queue       = true
+    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_topic_name         = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
+run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic       = true
+    enable_managed_network_incident_queue       = true
+    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_max_receive_count = 7
+  }
+
+  assert {
+    condition = (
+      length(terraform_data.managed_network_incident_queue_contract) == 1
+      && length(aws_sqs_queue.network_incidents) == 1
+      && length(aws_sqs_queue.network_incident_dlq) == 1
+      && length(aws_sqs_queue_policy.network_incident_queues) == 2
+      && length(aws_sns_topic_subscription.network_incident_queue) == 1
+    )
+    error_message = "Queue opt-in must create one subscriber, one DLQ, two policies and one subscription."
+  }
+
+  assert {
+    condition = (
+      aws_sqs_queue.network_incidents[0].kms_data_key_reuse_period_seconds == 300
+      && aws_sqs_queue.network_incident_dlq[0].kms_data_key_reuse_period_seconds == 300
+      && aws_sqs_queue.network_incident_dlq[0].message_retention_seconds == 1209600
+    )
+    error_message = "Both queues must bound KMS data-key reuse and retain dead letters for 14 days."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_sqs_queue.network_incidents[0].redrive_policy).deadLetterTargetArn == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer-dlq"
+      && jsondecode(aws_sqs_queue.network_incidents[0].redrive_policy).maxReceiveCount == 7
+      && jsondecode(aws_sqs_queue.network_incident_dlq[0].redrive_allow_policy).redrivePermission == "byQueue"
+      && jsondecode(aws_sqs_queue.network_incident_dlq[0].redrive_allow_policy).sourceQueueArns == ["arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"]
+      && jsondecode(aws_sns_topic_subscription.network_incident_queue[0].redrive_policy).deadLetterTargetArn == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer-dlq"
+    )
+    error_message = "Consumer and subscription failures must redrive only to the bounded incident DLQ."
+  }
+
+  assert {
+    condition = (
+      aws_sns_topic_subscription.network_incident_queue[0].protocol == "sqs"
+      && aws_sns_topic_subscription.network_incident_queue[0].endpoint == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"
+      && aws_sns_topic_subscription.network_incident_queue[0].raw_message_delivery == false
+    )
+    error_message = "The managed topic must retain its SNS envelope when delivering to the exact queue."
+  }
+
+  assert {
+    condition = alltrue([
+      for queue_policy in aws_sqs_queue_policy.network_incident_queues : (
+        jsondecode(queue_policy.policy).Statement[0].Principal.Service == "sns.amazonaws.com"
+        && jsondecode(queue_policy.policy).Statement[0].Action == "sqs:SendMessage"
+        && jsondecode(queue_policy.policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "123456789012"
+        && jsondecode(queue_policy.policy).Statement[0].Condition.ArnEquals["aws:SourceArn"] == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
+        && jsondecode(queue_policy.policy).Statement[1].Principal.AWS == "arn:aws:iam::123456789012:role/network-incident-consumer"
+        && !contains(jsondecode(queue_policy.policy).Statement[1].Action, "sqs:SendMessage")
+        && jsondecode(queue_policy.policy).Statement[2].Condition.StringNotLike["aws:PrincipalArn"] == "arn:aws:iam::123456789012:role/network-incident-consumer"
+        && jsondecode(queue_policy.policy).Statement[3].Effect == "Deny"
+        && jsondecode(queue_policy.policy).Statement[4].Condition.Bool["aws:SecureTransport"] == "false"
+      )
+    ])
+    error_message = "Queue policies must separate exact-topic delivery from TLS-only consumer access."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_sqs_queue_policy.network_incident_queues[0].policy).Statement[3].Condition.ArnNotLike["aws:SourceArn"] == ["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"]
+      && jsondecode(aws_sqs_queue_policy.network_incident_queues[1].policy).Statement[3].Condition.ArnNotLike["aws:SourceArn"] == [
+        "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents",
+        "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer",
+      ]
+    )
+    error_message = "The main queue must admit only SNS while the DLQ also admits its exact redrive source."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_kms_key.network_incidents[0].policy).Statement[2].Principal.Service == "sns.amazonaws.com"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[2].Condition.StringEquals["aws:SourceAccount"] == "123456789012"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[2].Condition.ArnEquals["aws:SourceArn"] == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[3].Principal.AWS == "arn:aws:iam::123456789012:role/network-incident-consumer"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[3].Action == "kms:Decrypt"
+      && length(jsondecode(aws_kms_key.network_incidents[0].policy).Statement[3].Condition.ArnEquals["kms:EncryptionContext:aws:sqs:arn"]) == 2
+    )
+    error_message = "KMS access must separate scoped SNS production from queue-bound consumer decryption."
+  }
+
+  assert {
+    condition = (
+      output.managed_network_incident_route.queue_arn == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"
+      && output.managed_network_incident_route.dead_letter_queue_arn == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer-dlq"
+    )
+    error_message = "The route output must expose both durable subscriber queue ARNs."
   }
 }
 

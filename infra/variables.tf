@@ -81,6 +81,42 @@ variable "managed_network_incident_topic_name" {
   }
 }
 
+variable "enable_managed_network_incident_queue" {
+  type        = bool
+  default     = false
+  description = "Create a KMS-encrypted SQS subscriber and dead-letter queue for the managed topic."
+}
+
+variable "managed_network_incident_consumer_role_arn" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "IAM role allowed to consume from the managed incident queue and its dead-letter queue."
+
+  validation {
+    condition = (
+      var.managed_network_incident_consumer_role_arn == null
+      || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", var.managed_network_incident_consumer_role_arn))
+    )
+    error_message = "managed_network_incident_consumer_role_arn must be null or an IAM role ARN."
+  }
+}
+
+variable "managed_network_incident_max_receive_count" {
+  type        = number
+  default     = 5
+  description = "Failed consumer receives before an incident message moves to the dead-letter queue."
+
+  validation {
+    condition = (
+      var.managed_network_incident_max_receive_count >= 1
+      && var.managed_network_incident_max_receive_count <= 1000
+      && floor(var.managed_network_incident_max_receive_count) == var.managed_network_incident_max_receive_count
+    )
+    error_message = "managed_network_incident_max_receive_count must be an integer from 1 to 1000."
+  }
+}
+
 variable "enable_vpc_flow_contributor_insights" {
   type        = bool
   default     = false
