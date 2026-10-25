@@ -101,9 +101,17 @@ Because queue-health notifications also enter the managed queue, enabling the qu
 least one unique action ARN in `managed_network_incident_queue_escalation_actions`. The module sends
 both ALARM and OK transitions directly to those actions as well as to the managed topic, and rejects
 the managed topic's own ARN as an escalation path. A stalled queue consumer therefore cannot be its
-own only notification path. The external action's resource policy, KMS grants and subscriber health
-remain the deployment owner's responsibility. The alarms detect backlog symptoms; they do not
-automatically redrive or delete messages.
+own only notification path. Because both state transitions use the same action list, only SNS topic
+and Lambda function ARNs are accepted. Actions must use the deployment partition and Region; SNS
+topics must also be in the alarm account. Use a Lambda relay with an explicit resource policy for a
+cross-account destination. At most four independent actions are accepted because the managed topic
+uses the fifth CloudWatch action slot.
+
+CloudWatch does not verify that a configured action exists. The deployment owner must therefore
+grant SNS publication or Lambda invocation to the exact alarm ARNs and source account. Lambda
+policies should grant `lambda.alarms.cloudwatch.amazonaws.com`, not the general CloudWatch service
+principal. Destination policy, KMS grants and subscriber health remain deployment responsibilities.
+The alarms detect backlog symptoms; they do not automatically redrive or delete messages.
 
 The queue fails closed unless the managed topic, consumer role and independent escalation action
 are all supplied. It does not

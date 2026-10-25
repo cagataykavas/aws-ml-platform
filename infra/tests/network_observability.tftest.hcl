@@ -256,6 +256,85 @@ run "managed_incident_queue_rejects_duplicate_escalation_actions" {
   expect_failures = [var.managed_network_incident_queue_escalation_actions]
 }
 
+run "managed_incident_queue_rejects_unsupported_action_types" {
+  command = plan
+
+  variables {
+    managed_network_incident_queue_escalation_actions = [
+      "arn:aws:iam::123456789012:role/not-an-alarm-action",
+    ]
+  }
+
+  expect_failures = [var.managed_network_incident_queue_escalation_actions]
+}
+
+run "managed_incident_queue_reserves_the_cloudwatch_action_quota" {
+  command = plan
+
+  variables {
+    managed_network_incident_queue_escalation_actions = [
+      "arn:aws:sns:eu-central-1:123456789012:paging-1",
+      "arn:aws:sns:eu-central-1:123456789012:paging-2",
+      "arn:aws:sns:eu-central-1:123456789012:paging-3",
+      "arn:aws:sns:eu-central-1:123456789012:paging-4",
+      "arn:aws:sns:eu-central-1:123456789012:paging-5",
+    ]
+  }
+
+  expect_failures = [var.managed_network_incident_queue_escalation_actions]
+}
+
+run "managed_incident_queue_rejects_cross_region_actions" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic             = true
+    enable_managed_network_incident_queue             = true
+    managed_network_incident_consumer_role_arn        = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_queue_escalation_actions = [
+      "arn:aws:sns:us-east-1:123456789012:independent-paging",
+    ]
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
+run "managed_incident_queue_rejects_cross_account_sns_actions" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic             = true
+    enable_managed_network_incident_queue             = true
+    managed_network_incident_consumer_role_arn        = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_queue_escalation_actions = [
+      "arn:aws:sns:eu-central-1:210987654321:independent-paging",
+    ]
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
+run "managed_incident_queue_accepts_scoped_cross_account_lambda" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic             = true
+    enable_managed_network_incident_queue             = true
+    managed_network_incident_consumer_role_arn        = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_queue_escalation_actions = [
+      "arn:aws:lambda:eu-central-1:210987654321:function:incident-relay:prod",
+    ]
+  }
+
+  assert {
+    condition = aws_cloudwatch_metric_alarm.network_incident_queue_age[0].alarm_actions == toset([
+      "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents",
+      "arn:aws:lambda:eu-central-1:210987654321:function:incident-relay:prod",
+    ])
+    error_message = "A same-Region Lambda relay must remain available for policy-scoped cross-account escalation."
+  }
+}
+
 run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
   command = plan
 

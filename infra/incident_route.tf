@@ -224,6 +224,24 @@ resource "terraform_data" "managed_network_incident_queue_contract" {
       ])
       error_message = "Queue-health escalation actions must be independent of the managed incident topic."
     }
+
+    precondition {
+      condition = alltrue([
+        for action in var.managed_network_incident_queue_escalation_actions :
+        split(":", action)[1] == data.aws_partition.current.partition
+        && split(":", action)[3] == var.aws_region
+      ])
+      error_message = "Queue-health escalation actions must use the deployment partition and Region."
+    }
+
+    precondition {
+      condition = alltrue([
+        for action in var.managed_network_incident_queue_escalation_actions :
+        split(":", action)[2] != "sns"
+        || split(":", action)[4] == data.aws_caller_identity.current.account_id
+      ])
+      error_message = "Queue-health SNS actions must be owned by the alarm account; use a scoped Lambda relay for cross-account delivery."
+    }
   }
 }
 
