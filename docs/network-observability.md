@@ -76,7 +76,10 @@ enable_managed_network_incident_topic                    = true
 enable_managed_network_incident_queue                    = true
 managed_network_incident_consumer_role_arn               = "arn:aws:iam::123456789012:role/network-incident-consumer"
 managed_network_incident_max_receive_count               = 5
-managed_network_incident_queue_age_threshold_seconds = 300
+managed_network_incident_queue_age_threshold_seconds     = 300
+managed_network_incident_queue_escalation_actions = [
+  "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+]
 ```
 
 This creates a customer-key-encrypted SQS subscription plus an encrypted 14-day dead-letter queue.
@@ -94,12 +97,16 @@ visible. Both alarms treat missing metrics as healthy and send ALARM and OK tran
 same encrypted topic. Their exact ARNs are added to the SNS and KMS resource policies rather than
 granting CloudWatch wildcard publication.
 
-Because queue-health notifications also enter the managed queue, a deployment must attach an
-independent paging subscriber to the exported topic. A stalled queue consumer cannot be its own
-only notification path. The alarms detect backlog symptoms; they do not automatically redrive or
-delete messages.
+Because queue-health notifications also enter the managed queue, enabling the queue requires at
+least one unique action ARN in `managed_network_incident_queue_escalation_actions`. The module sends
+both ALARM and OK transitions directly to those actions as well as to the managed topic, and rejects
+the managed topic's own ARN as an escalation path. A stalled queue consumer therefore cannot be its
+own only notification path. The external action's resource policy, KMS grants and subscriber health
+remain the deployment owner's responsibility. The alarms detect backlog symptoms; they do not
+automatically redrive or delete messages.
 
-The queue fails closed unless the managed topic and consumer role are both supplied. It does not
+The queue fails closed unless the managed topic, consumer role and independent escalation action
+are all supplied. It does not
 create the consumer workload, automated redrive, paging workflow or cross-account access. Those
 remain deployment-specific controls, and live delivery still needs a canary because mocked Terraform
 plans prove configuration shape rather than AWS runtime behavior.

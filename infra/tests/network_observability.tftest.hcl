@@ -151,8 +151,11 @@ run "managed_incident_queue_requires_the_managed_topic" {
   command = plan
 
   variables {
-    enable_managed_network_incident_queue       = true
-    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    enable_managed_network_incident_queue              = true
+    managed_network_incident_consumer_role_arn         = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_queue_escalation_actions  = [
+      "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+    ]
   }
 
   expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
@@ -162,8 +165,11 @@ run "managed_incident_queue_requires_an_explicit_consumer" {
   command = plan
 
   variables {
-    enable_managed_network_incident_topic = true
-    enable_managed_network_incident_queue = true
+    enable_managed_network_incident_topic              = true
+    enable_managed_network_incident_queue              = true
+    managed_network_incident_queue_escalation_actions  = [
+      "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+    ]
   }
 
   expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
@@ -173,9 +179,12 @@ run "managed_incident_queue_rejects_malformed_consumer_arns" {
   command = plan
 
   variables {
-    enable_managed_network_incident_topic       = true
-    enable_managed_network_incident_queue       = true
-    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:user/not-a-role"
+    enable_managed_network_incident_topic              = true
+    enable_managed_network_incident_queue              = true
+    managed_network_incident_consumer_role_arn         = "arn:aws:iam::123456789012:user/not-a-role"
+    managed_network_incident_queue_escalation_actions  = [
+      "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+    ]
   }
 
   expect_failures = [var.managed_network_incident_consumer_role_arn]
@@ -185,10 +194,13 @@ run "managed_incident_queue_rejects_derived_names_over_the_sqs_limit" {
   command = plan
 
   variables {
-    enable_managed_network_incident_topic       = true
-    enable_managed_network_incident_queue       = true
-    managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
-    managed_network_incident_topic_name         = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    enable_managed_network_incident_topic              = true
+    enable_managed_network_incident_queue              = true
+    managed_network_incident_consumer_role_arn         = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_topic_name                = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    managed_network_incident_queue_escalation_actions  = [
+      "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+    ]
   }
 
   expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
@@ -204,14 +216,57 @@ run "managed_incident_queue_rejects_unbounded_age_thresholds" {
   expect_failures = [var.managed_network_incident_queue_age_threshold_seconds]
 }
 
-run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
+run "managed_incident_queue_requires_an_independent_escalation_action" {
   command = plan
 
   variables {
     enable_managed_network_incident_topic       = true
     enable_managed_network_incident_queue       = true
     managed_network_incident_consumer_role_arn = "arn:aws:iam::123456789012:role/network-incident-consumer"
-    managed_network_incident_max_receive_count = 7
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
+run "managed_incident_queue_rejects_its_own_topic_as_escalation" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic              = true
+    enable_managed_network_incident_queue              = true
+    managed_network_incident_consumer_role_arn         = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_queue_escalation_actions  = [
+      "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents",
+    ]
+  }
+
+  expect_failures = [terraform_data.managed_network_incident_queue_contract[0]]
+}
+
+run "managed_incident_queue_rejects_duplicate_escalation_actions" {
+  command = plan
+
+  variables {
+    managed_network_incident_queue_escalation_actions = [
+      "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+      "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+    ]
+  }
+
+  expect_failures = [var.managed_network_incident_queue_escalation_actions]
+}
+
+run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic              = true
+    enable_managed_network_incident_queue              = true
+    managed_network_incident_consumer_role_arn         = "arn:aws:iam::123456789012:role/network-incident-consumer"
+    managed_network_incident_max_receive_count         = 7
+    managed_network_incident_queue_escalation_actions  = [
+      "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+    ]
   }
 
   assert {
@@ -254,10 +309,13 @@ run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
 
   assert {
     condition = (
-      aws_cloudwatch_metric_alarm.network_incident_queue_age[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
-      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].ok_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
-      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].alarm_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
-      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].ok_actions == toset(["arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"])
+      aws_cloudwatch_metric_alarm.network_incident_queue_age[0].alarm_actions == toset([
+        "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents",
+        "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+      ])
+      && aws_cloudwatch_metric_alarm.network_incident_queue_age[0].ok_actions == aws_cloudwatch_metric_alarm.network_incident_queue_age[0].alarm_actions
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].alarm_actions == aws_cloudwatch_metric_alarm.network_incident_queue_age[0].alarm_actions
+      && aws_cloudwatch_metric_alarm.network_incident_dead_letters[0].ok_actions == aws_cloudwatch_metric_alarm.network_incident_queue_age[0].alarm_actions
       && length(jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[1].Condition.ArnEquals["aws:SourceArn"]) == 4
       && length(jsondecode(aws_kms_key.network_incidents[0].policy).Statement[1].Condition.ArnEquals["aws:SourceArn"]) == 4
     )
@@ -341,8 +399,12 @@ run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
         "ml-platform-network-incidents-consumer-age",
         "ml-platform-network-incidents-consumer-dlq",
       ])
+      && output.managed_network_incident_route.queue_health_actions == tolist([
+        "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents",
+        "arn:aws:sns:eu-central-1:123456789012:independent-paging",
+      ])
     )
-    error_message = "The route output must expose both durable queue ARNs and their health alarm names."
+    error_message = "The route output must expose durable queue ARNs, health alarm names and independent action paths."
   }
 }
 
