@@ -73,6 +73,7 @@ The task role is intentionally separate from deployment/CI identity.
 - ALB target 5xx alarms;
 - ALB target response-time alarms.
 - sustained incident-consumer backlog and any dead-lettered notification alarms.
+- a mandatory independent escalation action for queue-health alarm state changes.
 
 The ECS service and ALB are inputs because this repository focuses on reusable platform concerns rather than embedding a large monolithic stack.
 

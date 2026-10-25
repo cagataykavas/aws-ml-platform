@@ -27,6 +27,10 @@ locals {
     && var.enable_managed_network_incident_topic
     && var.managed_network_incident_consumer_role_arn != null
   )
+  managed_network_incident_queue_health_action_arns = distinct(concat(
+    [local.managed_network_incident_topic_arn],
+    var.managed_network_incident_queue_escalation_actions,
+  ))
   managed_network_incident_alarm_names = concat(
     local.managed_network_incident_base_alarm_names,
     local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_alarm_names : [],
@@ -187,8 +191,9 @@ resource "terraform_data" "managed_network_incident_queue_contract" {
   count = var.enable_managed_network_incident_queue ? 1 : 0
 
   input = {
-    topic_enabled     = var.enable_managed_network_incident_topic
-    consumer_role_arn = var.managed_network_incident_consumer_role_arn
+    topic_enabled      = var.enable_managed_network_incident_topic
+    consumer_role_arn  = var.managed_network_incident_consumer_role_arn
+    escalation_actions = var.managed_network_incident_queue_escalation_actions
   }
 
   lifecycle {
@@ -205,6 +210,19 @@ resource "terraform_data" "managed_network_incident_queue_contract" {
     precondition {
       condition     = length(var.managed_network_incident_topic_name) <= 67
       error_message = "The managed topic name must be at most 67 characters when deriving queue names."
+    }
+
+    precondition {
+      condition     = length(var.managed_network_incident_queue_escalation_actions) > 0
+      error_message = "The managed incident queue requires at least one independent queue-health escalation action."
+    }
+
+    precondition {
+      condition = alltrue([
+        for action in var.managed_network_incident_queue_escalation_actions :
+        action != local.managed_network_incident_topic_arn
+      ])
+      error_message = "Queue-health escalation actions must be independent of the managed incident topic."
     }
   }
 }
@@ -357,8 +375,8 @@ resource "aws_cloudwatch_metric_alarm" "network_incident_queue_age" {
   statistic           = "Maximum"
   threshold           = var.managed_network_incident_queue_age_threshold_seconds
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [local.managed_network_incident_topic_arn]
-  ok_actions          = [local.managed_network_incident_topic_arn]
+  alarm_actions       = local.managed_network_incident_queue_health_action_arns
+  ok_actions          = local.managed_network_incident_queue_health_action_arns
 
   dimensions = {
     QueueName = aws_sqs_queue.network_incidents[0].name
@@ -381,8 +399,8 @@ resource "aws_cloudwatch_metric_alarm" "network_incident_dead_letters" {
   statistic           = "Maximum"
   threshold           = 0
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [local.managed_network_incident_topic_arn]
-  ok_actions          = [local.managed_network_incident_topic_arn]
+  alarm_actions       = local.managed_network_incident_queue_health_action_arns
+  ok_actions          = local.managed_network_incident_queue_health_action_arns
 
   dimensions = {
     QueueName = aws_sqs_queue.network_incident_dlq[0].name
@@ -398,6 +416,7 @@ output "managed_network_incident_route" {
     queue_arn             = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_arn : null
     dead_letter_queue_arn = local.managed_network_incident_queue_enabled ? local.managed_network_incident_dlq_arn : null
     queue_health_alarms   = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_alarm_names : []
+    queue_health_actions  = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_health_action_arns : []
   } : null
   description = "Encrypted managed alarm route and optional durable subscriber; null when disabled."
 }

@@ -102,6 +102,25 @@ variable "managed_network_incident_consumer_role_arn" {
   }
 }
 
+variable "managed_network_incident_queue_escalation_actions" {
+  type        = list(string)
+  default     = []
+  description = "Independent SNS or incident-action ARNs invoked by queue-health alarms in addition to the managed topic."
+
+  validation {
+    condition = alltrue([
+      for action in var.managed_network_incident_queue_escalation_actions :
+      can(regex("^arn:aws[a-z-]*:", action))
+    ])
+    error_message = "managed_network_incident_queue_escalation_actions entries must be AWS ARNs."
+  }
+
+  validation {
+    condition     = length(var.managed_network_incident_queue_escalation_actions) == length(distinct(var.managed_network_incident_queue_escalation_actions))
+    error_message = "managed_network_incident_queue_escalation_actions entries must be unique."
+  }
+}
+
 variable "managed_network_incident_max_receive_count" {
   type        = number
   default     = 5
