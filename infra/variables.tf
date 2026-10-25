@@ -105,19 +105,27 @@ variable "managed_network_incident_consumer_role_arn" {
 variable "managed_network_incident_queue_escalation_actions" {
   type        = list(string)
   default     = []
-  description = "Independent SNS or incident-action ARNs invoked by queue-health alarms in addition to the managed topic."
+  description = "Independent SNS topic or Lambda function ARNs invoked for queue-health ALARM and OK transitions."
 
   validation {
     condition = alltrue([
       for action in var.managed_network_incident_queue_escalation_actions :
-      can(regex("^arn:aws[a-z-]*:", action))
+      (
+        can(regex("^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$", action))
+        || can(regex("^arn:aws[a-z-]*:lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,64}(:[A-Za-z0-9_-]{1,129})?$", action))
+      )
     ])
-    error_message = "managed_network_incident_queue_escalation_actions entries must be AWS ARNs."
+    error_message = "managed_network_incident_queue_escalation_actions entries must be SNS topic or Lambda function ARNs."
   }
 
   validation {
     condition     = length(var.managed_network_incident_queue_escalation_actions) == length(distinct(var.managed_network_incident_queue_escalation_actions))
     error_message = "managed_network_incident_queue_escalation_actions entries must be unique."
+  }
+
+  validation {
+    condition     = length(var.managed_network_incident_queue_escalation_actions) <= 4
+    error_message = "At most four independent queue-health actions are allowed because the managed topic consumes the fifth CloudWatch action slot."
   }
 }
 
