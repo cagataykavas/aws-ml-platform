@@ -84,13 +84,38 @@ The ECS service and ALB are inputs because this repository focuses on reusable p
 Every push and pull request runs:
 
 ```text
+python -m unittest discover -s tests -v
+python -m compileall -q scripts tests
 terraform fmt -check -diff
 terraform init -backend=false -input=false
 terraform validate
 terraform test
 ```
 
-This verifies formatting, provider installation, Terraform/provider-schema coherence and mocked plan contracts without placing AWS credentials in pull-request CI. It does **not** claim that a credential-free validation proves a live AWS deployment will succeed.
+This verifies the read-only route preflight, Python syntax, formatting, provider installation,
+Terraform/provider-schema coherence and mocked plan contracts without placing AWS credentials in
+pull-request CI. It does **not** claim that a credential-free validation proves a live AWS
+deployment will succeed.
+
+## Deployed-route preflight
+
+After applying the managed topic and queue, a read-only Python preflight compares the deployed
+SNS/SQS boundary with the Terraform output:
+
+```bash
+terraform -chdir=infra output -json managed_network_incident_route \
+  | python scripts/verify_network_incident_route.py -
+```
+
+It verifies the exact topic, consumer queue and dead-letter queue identities; KMS configuration;
+CloudWatch and SNS source-policy constraints; confirmed subscription; both redrive paths; and SNS
+envelope retention. The command emits machine-readable JSON and exits non-zero if any check fails.
+It requires only SNS attribute/subscription reads and SQS URL/attribute reads. It never publishes,
+receives, deletes or changes alarm state, so it is suitable for deployment gates that must not touch
+incident traffic.
+
+This is a control-plane preflight, not an end-to-end delivery claim. It cannot prove KMS usability,
+consumer health or data-plane delivery; a dedicated non-production canary remains the next step.
 
 ## Files
 
@@ -105,6 +130,10 @@ infra/
 ├── incident_route.tf # optional encrypted topic, governed queue and dead-letter route
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
+scripts/
+└── verify_network_incident_route.py # read-only deployed-route preflight
+tests/
+└── test_verify_network_incident_route.py # preflight unit and failure-path tests
 ```
 
 ## Broader AWS service map

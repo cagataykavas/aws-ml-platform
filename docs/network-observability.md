@@ -122,6 +122,35 @@ policies should grant `lambda.alarms.cloudwatch.amazonaws.com`, not the general 
 principal. Destination policy, KMS grants and subscriber health remain deployment responsibilities.
 The alarms detect backlog symptoms; they do not automatically redrive or delete messages.
 
+### Read-only deployed-route preflight
+
+Mocked Terraform plans prove the intended resource shape, but not whether a deployed subscription
+is confirmed or whether its live policies still match the repository contract. After deployment,
+run the credentialed preflight from an identity with read-only SNS and SQS inspection permissions:
+
+```bash
+terraform -chdir=infra output -json managed_network_incident_route \
+  | python scripts/verify_network_incident_route.py -
+```
+
+The identity needs `sns:GetTopicAttributes`, `sns:ListSubscriptionsByTopic`,
+`sns:GetSubscriptionAttributes`, `sqs:GetQueueUrl` and `sqs:GetQueueAttributes` for the managed
+resources. The verifier fails closed unless it observes:
+
+- one confirmed subscription from the exact topic to the exact consumer queue;
+- KMS identifiers on the topic, consumer queue and dead-letter queue;
+- exact account/alarm constraints on CloudWatch publication and exact topic/account constraints on
+  queue delivery;
+- bounded consumer redrive and an SNS delivery-failure redrive path to the expected dead-letter
+  queue;
+- a dead-letter allow policy scoped to the consumer queue and retention of the SNS envelope.
+
+Results are JSON so a deployment pipeline can archive the evidence without scraping prose. The
+verifier deliberately makes no publish, receive, delete or alarm-state calls. That avoids disturbing
+real incident traffic, but also means this check does not prove data-plane delivery, KMS key-policy
+usability or consumer processing. Use a dedicated non-production canary for those claims; do not
+force a production alarm state solely to test routing.
+
 The queue fails closed unless the managed topic, consumer role and independent escalation action
 are all supplied. It does not
 create the consumer workload, automated redrive, paging workflow or cross-account access. Those

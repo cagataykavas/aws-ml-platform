@@ -10,9 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
+      - name: Python preflight unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Python syntax validation
+        run: python -m compileall -q scripts tests
       - name: Terraform format
         run: terraform -chdir=infra fmt -check -diff
       - name: Terraform init without backend
