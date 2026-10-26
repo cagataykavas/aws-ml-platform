@@ -123,28 +123,147 @@ run "managed_incident_route_is_encrypted_scoped_and_tls_only" {
   }
 }
 
-run "managed_route_preserves_and_deduplicates_external_actions" {
+run "managed_route_preserves_supported_external_actions" {
   command = plan
 
   variables {
     enable_managed_network_incident_topic = true
     network_alarm_actions = [
       "arn:aws:sns:eu-central-1:123456789012:external-incidents",
-      "arn:aws:sns:eu-central-1:123456789012:external-incidents",
+      "arn:aws:lambda:eu-central-1:210987654321:function:incident-relay:prod",
     ]
   }
 
   assert {
     condition = (
-      length(aws_cloudwatch_metric_alarm.rejected_packets.alarm_actions) == 2
-      && length(aws_cloudwatch_metric_alarm.flow_log_delivery.alarm_actions) == 2
+      length(aws_cloudwatch_metric_alarm.rejected_packets.alarm_actions) == 3
+      && length(aws_cloudwatch_metric_alarm.flow_log_delivery.alarm_actions) == 3
       && contains(
         aws_cloudwatch_metric_alarm.rejected_packets.alarm_actions,
         "arn:aws:sns:eu-central-1:123456789012:external-incidents",
       )
+      && contains(
+        aws_cloudwatch_metric_alarm.rejected_packets.alarm_actions,
+        "arn:aws:lambda:eu-central-1:210987654321:function:incident-relay:prod",
+      )
     )
-    error_message = "Managed routing must preserve external actions without duplicate deliveries."
+    error_message = "Managed routing must preserve supported same-Region SNS and Lambda actions."
   }
+}
+
+run "network_alarms_reject_duplicate_actions" {
+  command = plan
+
+  variables {
+    network_alarm_actions = [
+      "arn:aws:sns:eu-central-1:123456789012:external-incidents",
+      "arn:aws:sns:eu-central-1:123456789012:external-incidents",
+    ]
+  }
+
+  expect_failures = [var.network_alarm_actions]
+}
+
+run "network_alarms_reject_unsupported_action_types" {
+  command = plan
+
+  variables {
+    network_alarm_actions = [
+      "arn:aws:iam::123456789012:role/not-an-alarm-action",
+    ]
+  }
+
+  expect_failures = [var.network_alarm_actions]
+}
+
+run "network_alarms_enforce_the_cloudwatch_action_quota" {
+  command = plan
+
+  variables {
+    network_alarm_actions = [
+      "arn:aws:sns:eu-central-1:123456789012:paging-1",
+      "arn:aws:sns:eu-central-1:123456789012:paging-2",
+      "arn:aws:sns:eu-central-1:123456789012:paging-3",
+      "arn:aws:sns:eu-central-1:123456789012:paging-4",
+      "arn:aws:sns:eu-central-1:123456789012:paging-5",
+      "arn:aws:sns:eu-central-1:123456789012:paging-6",
+    ]
+  }
+
+  expect_failures = [var.network_alarm_actions]
+}
+
+run "network_alarms_accept_five_actions_without_the_managed_topic" {
+  command = plan
+
+  variables {
+    network_alarm_actions = [
+      "arn:aws:sns:eu-central-1:123456789012:paging-1",
+      "arn:aws:sns:eu-central-1:123456789012:paging-2",
+      "arn:aws:sns:eu-central-1:123456789012:paging-3",
+      "arn:aws:sns:eu-central-1:123456789012:paging-4",
+      "arn:aws:sns:eu-central-1:123456789012:paging-5",
+    ]
+  }
+
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.rejected_packets.alarm_actions) == 5
+    error_message = "Five external actions must remain valid when no managed topic consumes an action slot."
+  }
+}
+
+run "managed_topic_reserves_a_network_alarm_action_slot" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic = true
+    network_alarm_actions = [
+      "arn:aws:sns:eu-central-1:123456789012:paging-1",
+      "arn:aws:sns:eu-central-1:123456789012:paging-2",
+      "arn:aws:sns:eu-central-1:123456789012:paging-3",
+      "arn:aws:sns:eu-central-1:123456789012:paging-4",
+      "arn:aws:sns:eu-central-1:123456789012:paging-5",
+    ]
+  }
+
+  expect_failures = [terraform_data.network_alarm_action_contract[0]]
+}
+
+run "network_alarms_reject_the_managed_topic_as_an_external_action" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic = true
+    network_alarm_actions = [
+      "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents",
+    ]
+  }
+
+  expect_failures = [terraform_data.network_alarm_action_contract[0]]
+}
+
+run "network_alarms_reject_cross_region_actions" {
+  command = plan
+
+  variables {
+    network_alarm_actions = [
+      "arn:aws:sns:us-east-1:123456789012:external-incidents",
+    ]
+  }
+
+  expect_failures = [terraform_data.network_alarm_action_contract[0]]
+}
+
+run "network_alarms_reject_cross_account_sns_actions" {
+  command = plan
+
+  variables {
+    network_alarm_actions = [
+      "arn:aws:sns:eu-central-1:210987654321:external-incidents",
+    ]
+  }
+
+  expect_failures = [terraform_data.network_alarm_action_contract[0]]
 }
 
 run "managed_incident_queue_requires_the_managed_topic" {

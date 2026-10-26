@@ -50,13 +50,27 @@ variable "rejected_packet_alarm_threshold" {
 variable "network_alarm_actions" {
   type        = list(string)
   default     = []
-  description = "SNS or incident-action ARNs invoked by network alarms; empty keeps CI credential-free."
+  description = "SNS topic or Lambda function ARNs invoked for network-alarm ALARM and OK transitions."
 
   validation {
     condition = alltrue([
-      for action in var.network_alarm_actions : can(regex("^arn:aws[a-z-]*:", action))
+      for action in var.network_alarm_actions :
+      (
+        can(regex("^arn:aws[a-z-]*:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$", action))
+        || can(regex("^arn:aws[a-z-]*:lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,64}(:[A-Za-z0-9_-]{1,129})?$", action))
+      )
     ])
-    error_message = "network_alarm_actions entries must be AWS ARNs."
+    error_message = "network_alarm_actions entries must be SNS topic or Lambda function ARNs."
+  }
+
+  validation {
+    condition     = length(var.network_alarm_actions) == length(distinct(var.network_alarm_actions))
+    error_message = "network_alarm_actions entries must be unique."
+  }
+
+  validation {
+    condition     = length(var.network_alarm_actions) <= 5
+    error_message = "At most five external network-alarm actions are allowed by CloudWatch."
   }
 }
 

@@ -45,6 +45,52 @@ locals {
   ))
 }
 
+resource "terraform_data" "network_alarm_action_contract" {
+  count = length(var.network_alarm_actions) > 0 ? 1 : 0
+
+  input = {
+    actions               = var.network_alarm_actions
+    managed_topic_enabled = var.enable_managed_network_incident_topic
+  }
+
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for action in var.network_alarm_actions :
+        split(":", action)[1] == data.aws_partition.current.partition
+        && split(":", action)[3] == var.aws_region
+      ])
+      error_message = "Network-alarm actions must use the deployment partition and Region."
+    }
+
+    precondition {
+      condition = alltrue([
+        for action in var.network_alarm_actions :
+        split(":", action)[2] != "sns"
+        || split(":", action)[4] == data.aws_caller_identity.current.account_id
+      ])
+      error_message = "Network-alarm SNS actions must be owned by the alarm account; use a scoped Lambda relay for cross-account delivery."
+    }
+
+    precondition {
+      condition = (
+        !var.enable_managed_network_incident_topic
+        || length(var.network_alarm_actions) <= 4
+      )
+      error_message = "At most four external network-alarm actions are allowed when the managed topic consumes the fifth CloudWatch action slot."
+    }
+
+    precondition {
+      condition = alltrue([
+        for action in var.network_alarm_actions :
+        !var.enable_managed_network_incident_topic
+        || action != local.managed_network_incident_topic_arn
+      ])
+      error_message = "External network-alarm actions must not duplicate the managed incident topic."
+    }
+  }
+}
+
 resource "aws_kms_key" "network_incidents" {
   count = var.enable_managed_network_incident_topic ? 1 : 0
 

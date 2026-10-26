@@ -208,7 +208,10 @@ resource "aws_cloudwatch_metric_alarm" "rejected_packets" {
   alarm_actions       = local.network_alarm_action_arns
   ok_actions          = local.network_alarm_action_arns
 
-  depends_on = [aws_sns_topic_policy.network_incidents]
+  depends_on = [
+    aws_sns_topic_policy.network_incidents,
+    terraform_data.network_alarm_action_contract,
+  ]
 }
 
 resource "aws_cloudwatch_metric_alarm" "flow_log_delivery" {
@@ -226,7 +229,10 @@ resource "aws_cloudwatch_metric_alarm" "flow_log_delivery" {
   alarm_actions       = local.network_alarm_action_arns
   ok_actions          = local.network_alarm_action_arns
 
-  depends_on = [aws_sns_topic_policy.network_incidents]
+  depends_on = [
+    aws_sns_topic_policy.network_incidents,
+    terraform_data.network_alarm_action_contract,
+  ]
 }
 
 output "vpc_flow_log_id" {
