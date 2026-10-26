@@ -53,9 +53,18 @@ Alarm actions are explicit inputs rather than placeholder resources:
 network_alarm_actions = [aws_sns_topic.platform_incidents.arn]
 ```
 
+Only SNS topic and Lambda function ARNs are accepted because both ALARM and OK transitions use the
+same targets. Every action must match the deployment partition and Region; SNS topics must also be
+owned by the alarm account. A same-Region Lambda relay with an explicit resource policy remains the
+supported cross-account path. Duplicate actions and unsupported resource types fail validation.
+CloudWatch permits five actions per state transition, so the module accepts at most five external
+actions, or four when the managed topic consumes the remaining slot. The managed topic cannot also
+be supplied as an external action.
+
 The empty default keeps pull-request validation credential-free. A deployment environment should
-wire the list to a governed SNS/incident route and calibrate `rejected_packet_alarm_threshold` from
-known-good traffic.
+wire the list to governed targets, grant the exact alarm ARNs in destination policies and calibrate
+`rejected_packet_alarm_threshold` from known-good traffic. ARN and topology validation does not
+prove that a destination exists or can receive a live transition.
 
 Alternatively, set `enable_managed_network_incident_topic = true` to attach both ALARM and OK
 transitions to a repository-managed SNS topic. The topic uses a dedicated rotating customer-managed

@@ -72,6 +72,7 @@ The task role is intentionally separate from deployment/CI identity.
 - a 30-day CloudWatch log group;
 - ALB target 5xx alarms;
 - ALB target response-time alarms;
+- fail-closed SNS/Lambda type, uniqueness, Region/account and action-quota contracts for VPC alarms;
 - sustained incident-consumer backlog and any dead-lettered notification alarms;
 - a mandatory independent escalation action for queue-health alarm state changes;
 - fail-closed SNS/Lambda action type, Region/account and CloudWatch action-quota contracts.
