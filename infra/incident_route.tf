@@ -14,6 +14,7 @@ locals {
   managed_network_incident_topic_arn = "arn:${data.aws_partition.current.partition}:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.managed_network_incident_topic_name}"
   managed_network_incident_queue_arn = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.managed_network_incident_topic_name}-consumer"
   managed_network_incident_dlq_arn   = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.managed_network_incident_topic_name}-consumer-dlq"
+  network_incident_canary_queue_arn  = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${var.managed_network_incident_topic_name}-canary"
   managed_network_incident_queue_arns = [
     local.managed_network_incident_queue_arn,
     local.managed_network_incident_dlq_arn,
@@ -26,6 +27,11 @@ locals {
     var.enable_managed_network_incident_queue
     && var.enable_managed_network_incident_topic
     && var.managed_network_incident_consumer_role_arn != null
+  )
+  network_incident_delivery_canary_enabled = (
+    var.enable_network_incident_delivery_canary
+    && var.enable_managed_network_incident_topic
+    && var.network_incident_canary_role_arn != null
   )
   managed_network_incident_queue_health_action_arns = distinct(concat(
     [local.managed_network_incident_topic_arn],
@@ -149,7 +155,8 @@ resource "aws_kms_key" "network_incidents" {
             "aws:SourceArn" = local.managed_network_incident_topic_arn
           }
         }
-        }, {
+      }] : statement if local.managed_network_incident_queue_enabled || local.network_incident_delivery_canary_enabled],
+      [for statement in [{
         Sid    = "ConsumerQueueDecryption"
         Effect = "Allow"
         Principal = {
@@ -163,6 +170,37 @@ resource "aws_kms_key" "network_incidents" {
           }
         }
       }] : statement if local.managed_network_incident_queue_enabled],
+      [for statement in [{
+        Sid    = "CanaryTopicEncryption"
+        Effect = "Allow"
+        Principal = {
+          AWS = var.network_incident_canary_role_arn
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:EncryptionContext:aws:sns:topicArn" = local.managed_network_incident_topic_arn
+            "kms:ViaService"                         = "sns.${var.aws_region}.amazonaws.com"
+          }
+        }
+        }, {
+        Sid    = "CanaryQueueDecryption"
+        Effect = "Allow"
+        Principal = {
+          AWS = var.network_incident_canary_role_arn
+        }
+        Action   = "kms:Decrypt"
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "kms:EncryptionContext:aws:sqs:arn" = local.network_incident_canary_queue_arn
+          }
+        }
+      }] : statement if local.network_incident_delivery_canary_enabled],
     )
   })
 
@@ -190,7 +228,7 @@ resource "aws_sns_topic_policy" "network_incidents" {
   arn = aws_sns_topic.network_incidents[0].arn
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid    = "AccountAdministration"
         Effect = "Allow"
@@ -217,19 +255,31 @@ resource "aws_sns_topic_policy" "network_incidents" {
           }
         }
       },
-      {
-        Sid       = "DenyInsecureTransport"
-        Effect    = "Deny"
-        Principal = "*"
-        Action    = "SNS:*"
-        Resource  = local.managed_network_incident_topic_arn
-        Condition = {
-          Bool = {
-            "aws:SecureTransport" = "false"
-          }
+      ],
+      [for statement in [{
+        Sid    = "DeliveryCanaryPublish"
+        Effect = "Allow"
+        Principal = {
+          AWS = var.network_incident_canary_role_arn
         }
-      },
-    ]
+        Action   = "SNS:Publish"
+        Resource = local.managed_network_incident_topic_arn
+      }] : statement if local.network_incident_delivery_canary_enabled],
+      [
+        {
+          Sid       = "DenyInsecureTransport"
+          Effect    = "Deny"
+          Principal = "*"
+          Action    = "SNS:*"
+          Resource  = local.managed_network_incident_topic_arn
+          Condition = {
+            Bool = {
+              "aws:SecureTransport" = "false"
+            }
+          }
+        },
+      ]
+    )
   })
 }
 
@@ -287,6 +337,32 @@ resource "terraform_data" "managed_network_incident_queue_contract" {
         || split(":", action)[4] == data.aws_caller_identity.current.account_id
       ])
       error_message = "Queue-health SNS actions must be owned by the alarm account; use a scoped Lambda relay for cross-account delivery."
+    }
+  }
+}
+
+resource "terraform_data" "network_incident_delivery_canary_contract" {
+  count = var.enable_network_incident_delivery_canary ? 1 : 0
+
+  input = {
+    topic_enabled   = var.enable_managed_network_incident_topic
+    canary_role_arn = var.network_incident_canary_role_arn
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_managed_network_incident_topic
+      error_message = "The delivery canary requires the managed incident topic."
+    }
+
+    precondition {
+      condition     = var.network_incident_canary_role_arn != null
+      error_message = "The delivery canary requires an explicit IAM runner role ARN."
+    }
+
+    precondition {
+      condition     = length(var.managed_network_incident_topic_name) <= 73
+      error_message = "The managed topic name must be at most 73 characters when deriving the canary queue name."
     }
   }
 }
@@ -418,11 +494,128 @@ resource "aws_sns_topic_subscription" "network_incident_queue" {
   protocol             = "sqs"
   endpoint             = local.managed_network_incident_queue_arn
   raw_message_delivery = false
+  filter_policy_scope  = "MessageAttributes"
+  filter_policy = jsonencode({
+    route_canary = [
+      { "anything-but" = "true" },
+      { exists = false },
+    ]
+  })
   redrive_policy = jsonencode({
     deadLetterTargetArn = local.managed_network_incident_dlq_arn
   })
 
   depends_on = [aws_sqs_queue_policy.network_incident_queues]
+}
+
+resource "aws_sqs_queue" "network_incident_canary" {
+  count = local.network_incident_delivery_canary_enabled ? 1 : 0
+
+  name                              = "${var.managed_network_incident_topic_name}-canary"
+  kms_master_key_id                 = aws_kms_key.network_incidents[0].arn
+  kms_data_key_reuse_period_seconds = 300
+  message_retention_seconds         = 300
+  visibility_timeout_seconds        = 30
+
+  tags = {
+    Workload = "ml-platform"
+    Purpose  = "network-incident-delivery-canary"
+  }
+}
+
+resource "aws_sqs_queue_policy" "network_incident_canary" {
+  count = local.network_incident_delivery_canary_enabled ? 1 : 0
+
+  queue_url = aws_sqs_queue.network_incident_canary[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ExactTopicDelivery"
+        Effect = "Allow"
+        Principal = {
+          Service = "sns.amazonaws.com"
+        }
+        Action   = "sqs:SendMessage"
+        Resource = local.network_incident_canary_queue_arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+          ArnEquals = {
+            "aws:SourceArn" = local.managed_network_incident_topic_arn
+          }
+        }
+      },
+      {
+        Sid    = "CanaryRunner"
+        Effect = "Allow"
+        Principal = {
+          AWS = var.network_incident_canary_role_arn
+        }
+        Action = [
+          "sqs:DeleteMessage",
+          "sqs:GetQueueUrl",
+          "sqs:ReceiveMessage",
+        ]
+        Resource = local.network_incident_canary_queue_arn
+      },
+      {
+        Sid       = "DenyOtherConsumers"
+        Effect    = "Deny"
+        Principal = "*"
+        Action = [
+          "sqs:DeleteMessage",
+          "sqs:ReceiveMessage",
+        ]
+        Resource = local.network_incident_canary_queue_arn
+        Condition = {
+          StringNotLike = {
+            "aws:PrincipalArn" = var.network_incident_canary_role_arn
+          }
+        }
+      },
+      {
+        Sid       = "DenyUnapprovedProducers"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "sqs:SendMessage"
+        Resource  = local.network_incident_canary_queue_arn
+        Condition = {
+          ArnNotLike = {
+            "aws:SourceArn" = local.managed_network_incident_topic_arn
+          }
+        }
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "sqs:*"
+        Resource  = local.network_incident_canary_queue_arn
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+    ]
+  })
+}
+
+resource "aws_sns_topic_subscription" "network_incident_canary" {
+  count = local.network_incident_delivery_canary_enabled ? 1 : 0
+
+  topic_arn            = aws_sns_topic.network_incidents[0].arn
+  protocol             = "sqs"
+  endpoint             = local.network_incident_canary_queue_arn
+  raw_message_delivery = false
+  filter_policy_scope  = "MessageAttributes"
+  filter_policy = jsonencode({
+    route_canary = ["true"]
+  })
+
+  depends_on = [aws_sqs_queue_policy.network_incident_canary]
 }
 
 resource "aws_cloudwatch_metric_alarm" "network_incident_queue_age" {
@@ -475,12 +668,13 @@ resource "aws_cloudwatch_metric_alarm" "network_incident_dead_letters" {
 
 output "managed_network_incident_route" {
   value = var.enable_managed_network_incident_topic ? {
-    topic_arn             = local.managed_network_incident_topic_arn
-    kms_key_arn           = aws_kms_key.network_incidents[0].arn
-    queue_arn             = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_arn : null
-    dead_letter_queue_arn = local.managed_network_incident_queue_enabled ? local.managed_network_incident_dlq_arn : null
-    queue_health_alarms   = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_alarm_names : []
-    queue_health_actions  = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_health_action_arns : []
+    topic_arn                 = local.managed_network_incident_topic_arn
+    kms_key_arn               = aws_kms_key.network_incidents[0].arn
+    queue_arn                 = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_arn : null
+    dead_letter_queue_arn     = local.managed_network_incident_queue_enabled ? local.managed_network_incident_dlq_arn : null
+    queue_health_alarms       = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_alarm_names : []
+    queue_health_actions      = local.managed_network_incident_queue_enabled ? local.managed_network_incident_queue_health_action_arns : []
+    delivery_canary_queue_arn = local.network_incident_delivery_canary_enabled ? local.network_incident_canary_queue_arn : null
   } : null
   description = "Encrypted managed alarm route and optional durable subscriber; null when disabled."
 }
