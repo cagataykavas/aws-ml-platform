@@ -148,14 +148,47 @@ resources. The verifier fails closed unless it observes:
 Results are JSON so a deployment pipeline can archive the evidence without scraping prose. The
 verifier deliberately makes no publish, receive, delete or alarm-state calls. That avoids disturbing
 real incident traffic, but also means this check does not prove data-plane delivery, KMS key-policy
-usability or consumer processing. Use a dedicated non-production canary for those claims; do not
-force a production alarm state solely to test routing.
+usability or consumer processing.
+
+### Isolated data-plane delivery canary
+
+Enable the separate canary path when a deployment gate must prove encrypted SNS-to-SQS delivery:
+
+```hcl
+enable_managed_network_incident_topic   = true
+enable_network_incident_delivery_canary = true
+network_incident_canary_role_arn        = "arn:aws:iam::123456789012:role/network-incident-canary"
+```
+
+The canary queue is not the incident consumer queue or its DLQ. Its subscription retains the SNS
+envelope and has a `MessageAttributes` filter that accepts only `route_canary=true`; CloudWatch alarm
+messages have no such attribute and therefore never enter the canary queue. The production
+subscription independently permits missing or non-canary values and rejects `route_canary=true`, so
+the probe never enters the production consumer queue. The queue uses the route
+KMS key, retains messages for five minutes and grants receive/delete access only to the declared
+runner role. Topic publication and KMS use are scoped to the same role and exact encryption contexts.
+
+```bash
+terraform -chdir=infra output -json managed_network_incident_route \
+  | python scripts/run_network_incident_delivery_canary.py - \
+      --receive-attempts 3 --wait-seconds 10
+```
+
+The dependency-free probe generates a unique run ID, publishes one filtered message, validates the
+topic ARN, SNS envelope, attribute and complete inner payload, and deletes only that matching
+delivery. Stale canaries are ignored rather than deleted; a malformed matching delivery fails closed.
+Every AWS CLI call and the number and duration of long polls are bounded. The emitted JSON can be
+archived as deployment evidence without including credentials or arbitrary message bodies.
+
+The canary proves the dedicated topic-to-queue path and runner KMS permissions. It does not change an
+alarm state, read or delete production incident traffic, execute the production consumer, or prove
+redrive behavior. Keep the opt-in queue disabled where a live delivery gate is unnecessary.
 
 The queue fails closed unless the managed topic, consumer role and independent escalation action
 are all supplied. It does not
 create the consumer workload, automated redrive, paging workflow or cross-account access. Those
-remain deployment-specific controls, and live delivery still needs a canary because mocked Terraform
-plans prove configuration shape rather than AWS runtime behavior.
+remain deployment-specific controls. The isolated canary proves its own filtered route, while the
+production consumer and dead-letter path still require environment-specific validation.
 
 Contributor Insights and the dashboard are disabled by default because enabled rules incur
 per-event analysis charges and dashboards can add account-level cost. Enable them deliberately in

@@ -117,6 +117,15 @@ class FakeAws:
                 "Attributes": {
                     "RawMessageDelivery": "false",
                     "RedrivePolicy": json.dumps({"deadLetterTargetArn": DLQ_ARN}),
+                    "FilterPolicyScope": "MessageAttributes",
+                    "FilterPolicy": json.dumps(
+                        {
+                            "route_canary": [
+                                {"anything-but": "true"},
+                                {"exists": False},
+                            ]
+                        }
+                    ),
                 }
             },
         }
@@ -198,7 +207,7 @@ class VerifyTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "pass")
         self.assertTrue(all(check["passed"] for check in result["checks"]))
-        self.assertEqual(len(result["checks"]), 13)
+        self.assertEqual(len(result["checks"]), 14)
 
     def test_rejects_wildcard_cloudwatch_source(self) -> None:
         policy = json.loads(self.aws.responses["topic"]["Attributes"]["Policy"])
@@ -285,6 +294,16 @@ class VerifyTests(unittest.TestCase):
 
         failed = {check["name"] for check in result["checks"] if not check["passed"]}
         self.assertEqual(failed, {"sns-envelope-retention"})
+
+    def test_rejects_production_subscription_that_accepts_canaries(self) -> None:
+        self.aws.responses["subscription"]["Attributes"]["FilterPolicy"] = json.dumps(
+            {"route_canary": ["true"]}
+        )
+
+        result = verify(self.route, self.aws)
+
+        failed = {check["name"] for check in result["checks"] if not check["passed"]}
+        self.assertEqual(failed, {"delivery-canary-isolation"})
 
 
 if __name__ == "__main__":

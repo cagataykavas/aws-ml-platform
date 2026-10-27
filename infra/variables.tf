@@ -173,6 +173,27 @@ variable "managed_network_incident_queue_age_threshold_seconds" {
   }
 }
 
+variable "enable_network_incident_delivery_canary" {
+  type        = bool
+  default     = false
+  description = "Create an isolated, message-filtered SQS queue for explicit SNS delivery canaries."
+}
+
+variable "network_incident_canary_role_arn" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "IAM role allowed to publish and consume only the isolated network-incident canary path."
+
+  validation {
+    condition = (
+      var.network_incident_canary_role_arn == null
+      || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", var.network_incident_canary_role_arn))
+    )
+    error_message = "network_incident_canary_role_arn must be null or an IAM role ARN."
+  }
+}
+
 variable "enable_vpc_flow_contributor_insights" {
   type        = bool
   default     = false

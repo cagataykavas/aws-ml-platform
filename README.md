@@ -29,6 +29,7 @@ flowchart LR
     CW --> SNS[KMS-encrypted incident topic]
     SNS --> SQS[Encrypted governed subscriber]
     SQS --> DLQ[14-day dead-letter queue]
+    SNS --> CANARY[Filtered delivery-canary queue]
     IAM[Least-privilege ECS task role] --> ECS
 ```
 
@@ -92,7 +93,7 @@ terraform validate
 terraform test
 ```
 
-This verifies the read-only route preflight, Python syntax, formatting, provider installation,
+This verifies the route preflight and delivery-canary logic, Python syntax, formatting, provider installation,
 Terraform/provider-schema coherence and mocked plan contracts without placing AWS credentials in
 pull-request CI. It does **not** claim that a credential-free validation proves a live AWS
 deployment will succeed.
@@ -115,7 +116,35 @@ receives, deletes or changes alarm state, so it is suitable for deployment gates
 incident traffic.
 
 This is a control-plane preflight, not an end-to-end delivery claim. It cannot prove KMS usability,
-consumer health or data-plane delivery; a dedicated non-production canary remains the next step.
+consumer health or data-plane delivery.
+
+## Isolated delivery canary
+
+An optional canary closes that data-plane gap without publishing an alarm transition or reading the
+production incident queue. Terraform creates a separate, five-minute-retention encrypted queue whose
+SNS subscription accepts only messages carrying `route_canary=true`; the production subscription
+explicitly accepts missing or non-canary attributes and therefore excludes the probe:
+
+```hcl
+enable_managed_network_incident_topic   = true
+enable_network_incident_delivery_canary = true
+network_incident_canary_role_arn        = "arn:aws:iam::123456789012:role/network-incident-canary"
+```
+
+Run the bounded probe with that role:
+
+```bash
+terraform -chdir=infra output -json managed_network_incident_route \
+  | python scripts/run_network_incident_delivery_canary.py -
+```
+
+The probe publishes a unique correlation ID, validates the retained SNS envelope, topic identity,
+message attribute and exact payload, then deletes only the matching canary delivery. Unrelated or
+malformed messages are never deleted. Poll attempts and long-poll duration are bounded, and the JSON
+result records the SNS/SQS message identifiers without credentials or payload dumps.
+
+This proves the dedicated SNS→SQS delivery path and KMS usability for the runner role. It does not
+force a CloudWatch alarm, exercise the production consumer queue, or prove retry/DLQ behavior.
 
 ## Files
 
@@ -131,9 +160,11 @@ infra/
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
-└── verify_network_incident_route.py # read-only deployed-route preflight
+├── verify_network_incident_route.py # read-only deployed-route preflight
+└── run_network_incident_delivery_canary.py # isolated live delivery probe
 tests/
-└── test_verify_network_incident_route.py # preflight unit and failure-path tests
+├── test_verify_network_incident_route.py # preflight unit and failure-path tests
+└── test_run_network_incident_delivery_canary.py # canary isolation and deletion tests
 ```
 
 ## Broader AWS service map

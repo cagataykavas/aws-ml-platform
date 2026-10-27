@@ -41,6 +41,9 @@ run "managed_incident_route_is_explicitly_opted_out" {
       && length(aws_sns_topic_subscription.network_incident_queue) == 0
       && length(aws_cloudwatch_metric_alarm.network_incident_queue_age) == 0
       && length(aws_cloudwatch_metric_alarm.network_incident_dead_letters) == 0
+      && length(aws_sqs_queue.network_incident_canary) == 0
+      && length(aws_sqs_queue_policy.network_incident_canary) == 0
+      && length(aws_sns_topic_subscription.network_incident_canary) == 0
     )
     error_message = "The managed incident route and subscriber must remain absent unless explicitly enabled."
   }
@@ -545,8 +548,13 @@ run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
       aws_sns_topic_subscription.network_incident_queue[0].protocol == "sqs"
       && aws_sns_topic_subscription.network_incident_queue[0].endpoint == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"
       && aws_sns_topic_subscription.network_incident_queue[0].raw_message_delivery == false
+      && aws_sns_topic_subscription.network_incident_queue[0].filter_policy_scope == "MessageAttributes"
+      && jsondecode(aws_sns_topic_subscription.network_incident_queue[0].filter_policy).route_canary == [
+        { "anything-but" = "true" },
+        { exists = false },
+      ]
     )
-    error_message = "The managed topic must retain its SNS envelope when delivering to the exact queue."
+    error_message = "The managed topic must retain its SNS envelope and exclude explicit canaries from the production queue."
   }
 
   assert {
@@ -603,6 +611,124 @@ run "managed_incident_queue_is_encrypted_scoped_and_redriven" {
       ])
     )
     error_message = "The route output must expose durable queue ARNs, health alarm names and independent action paths."
+  }
+}
+
+run "delivery_canary_requires_the_managed_topic" {
+  command = plan
+
+  variables {
+    enable_network_incident_delivery_canary = true
+    network_incident_canary_role_arn        = "arn:aws:iam::123456789012:role/network-incident-canary"
+  }
+
+  expect_failures = [terraform_data.network_incident_delivery_canary_contract[0]]
+}
+
+run "delivery_canary_requires_an_explicit_runner" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic   = true
+    enable_network_incident_delivery_canary = true
+  }
+
+  expect_failures = [terraform_data.network_incident_delivery_canary_contract[0]]
+}
+
+run "delivery_canary_rejects_malformed_runner_arns" {
+  command = plan
+
+  variables {
+    network_incident_canary_role_arn = "not-an-iam-role"
+  }
+
+  expect_failures = [var.network_incident_canary_role_arn]
+}
+
+run "delivery_canary_rejects_derived_names_over_the_sqs_limit" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic   = true
+    enable_network_incident_delivery_canary = true
+    network_incident_canary_role_arn        = "arn:aws:iam::123456789012:role/network-incident-canary"
+    managed_network_incident_topic_name     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+
+  expect_failures = [terraform_data.network_incident_delivery_canary_contract[0]]
+}
+
+run "delivery_canary_is_encrypted_filtered_and_isolated" {
+  command = plan
+
+  variables {
+    enable_managed_network_incident_topic   = true
+    enable_network_incident_delivery_canary = true
+    network_incident_canary_role_arn        = "arn:aws:iam::123456789012:role/network-incident-canary"
+  }
+
+  assert {
+    condition = (
+      length(terraform_data.network_incident_delivery_canary_contract) == 1
+      && length(aws_sqs_queue.network_incident_canary) == 1
+      && length(aws_sqs_queue_policy.network_incident_canary) == 1
+      && length(aws_sns_topic_subscription.network_incident_canary) == 1
+      && length(aws_sqs_queue.network_incidents) == 0
+      && length(aws_sqs_queue.network_incident_dlq) == 0
+    )
+    error_message = "Canary opt-in must create only its dedicated queue, policy and filtered subscription."
+  }
+
+  assert {
+    condition = (
+      aws_sqs_queue.network_incident_canary[0].name == "ml-platform-network-incidents-canary"
+      && aws_sqs_queue.network_incident_canary[0].kms_data_key_reuse_period_seconds == 300
+      && aws_sqs_queue.network_incident_canary[0].message_retention_seconds == 300
+      && aws_sqs_queue.network_incident_canary[0].visibility_timeout_seconds == 30
+    )
+    error_message = "The canary queue must be short-lived, KMS encrypted and independently visible."
+  }
+
+  assert {
+    condition = (
+      aws_sns_topic_subscription.network_incident_canary[0].endpoint == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-canary"
+      && aws_sns_topic_subscription.network_incident_canary[0].raw_message_delivery == false
+      && aws_sns_topic_subscription.network_incident_canary[0].filter_policy_scope == "MessageAttributes"
+      && jsondecode(aws_sns_topic_subscription.network_incident_canary[0].filter_policy).route_canary == ["true"]
+    )
+    error_message = "The canary subscription must retain SNS provenance and admit only explicit canary messages."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_sqs_queue_policy.network_incident_canary[0].policy).Statement[0].Principal.Service == "sns.amazonaws.com"
+      && jsondecode(aws_sqs_queue_policy.network_incident_canary[0].policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "123456789012"
+      && jsondecode(aws_sqs_queue_policy.network_incident_canary[0].policy).Statement[0].Condition.ArnEquals["aws:SourceArn"] == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
+      && jsondecode(aws_sqs_queue_policy.network_incident_canary[0].policy).Statement[1].Principal.AWS == "arn:aws:iam::123456789012:role/network-incident-canary"
+      && jsondecode(aws_sqs_queue_policy.network_incident_canary[0].policy).Statement[2].Condition.StringNotLike["aws:PrincipalArn"] == "arn:aws:iam::123456789012:role/network-incident-canary"
+      && jsondecode(aws_sqs_queue_policy.network_incident_canary[0].policy).Statement[3].Condition.ArnNotLike["aws:SourceArn"] == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
+      && jsondecode(aws_sqs_queue_policy.network_incident_canary[0].policy).Statement[4].Condition.Bool["aws:SecureTransport"] == "false"
+    )
+    error_message = "The canary queue policy must separate exact-topic delivery from TLS-only runner access."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[2].Sid == "DeliveryCanaryPublish"
+      && jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[2].Principal.AWS == "arn:aws:iam::123456789012:role/network-incident-canary"
+      && jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[2].Action == "SNS:Publish"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[3].Sid == "CanaryTopicEncryption"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[3].Condition.StringEquals["kms:ViaService"] == "sns.eu-central-1.amazonaws.com"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[4].Sid == "CanaryQueueDecryption"
+      && jsondecode(aws_kms_key.network_incidents[0].policy).Statement[4].Condition.ArnEquals["kms:EncryptionContext:aws:sqs:arn"] == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-canary"
+    )
+    error_message = "The runner KMS and SNS grants must be scoped to the canary topic and queue contexts."
+  }
+
+  assert {
+    condition     = output.managed_network_incident_route.delivery_canary_queue_arn == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-canary"
+    error_message = "The route output must expose the isolated canary queue ARN to the verifier."
   }
 }
 

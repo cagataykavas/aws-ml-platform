@@ -268,6 +268,14 @@ def verify(route: Route, aws: AwsClient) -> dict[str, Any]:
             "SNS envelopes are retained for incident provenance",
             "raw delivery removes the SNS provenance envelope",
         )
+        subscription_filter = _json_object(subscription_attributes.get("FilterPolicy"))
+        check(
+            "delivery-canary-isolation",
+            subscription_attributes.get("FilterPolicyScope") == "MessageAttributes"
+            and _excludes_delivery_canaries(subscription_filter),
+            "production subscription excludes explicit delivery-canary messages",
+            "production subscription does not exclude delivery-canary messages",
+        )
 
     result = {
         "status": "pass" if all(item.passed for item in checks) else "fail",
@@ -419,6 +427,15 @@ def _json_object(value: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return decoded if isinstance(decoded, dict) else {}
+
+
+def _excludes_delivery_canaries(policy: dict[str, Any]) -> bool:
+    rules = policy.get("route_canary")
+    return isinstance(rules, list) and {
+        json.dumps(rule, sort_keys=True, separators=(",", ":"))
+        for rule in rules
+        if isinstance(rule, dict)
+    } == {'{"anything-but":"true"}', '{"exists":false}'}
 
 
 def _positive_integer(value: Any) -> bool:
