@@ -146,6 +146,31 @@ result records the SNS/SQS message identifiers without credentials or payload du
 This proves the dedicated SNS→SQS delivery path and KMS usability for the runner role. It does not
 force a CloudWatch alarm, exercise the production consumer queue, or prove retry/DLQ behavior.
 
+### Environment-approved OIDC execution
+
+The `incident-delivery-canary` workflow runs the same bounded probe on demand without storing AWS
+access keys. Its required `environment` input binds the job to a GitHub Environment, so deployments
+can require reviewers and restrict which branches may run the canary. Configure these non-secret
+Environment variables from the applied Terraform route:
+
+- `AWS_REGION` and the 12-digit `AWS_ACCOUNT_ID`;
+- `AWS_CANARY_ROLE_ARN`, whose trust policy must restrict GitHub's OIDC `sub` claim to this repository
+  and intended Environment;
+- `NETWORK_INCIDENT_TOPIC_ARN`, `NETWORK_INCIDENT_QUEUE_ARN`,
+  `NETWORK_INCIDENT_DLQ_ARN` and `NETWORK_INCIDENT_CANARY_QUEUE_ARN`.
+
+The workflow validates that every ARN shares the expected partition, account and Region before it
+requests credentials. The job grants GitHub only `contents: read` and `id-token: write`, exchanges
+the OIDC token for a 15-minute role session, bounds credential retries and canary polling, and
+serializes runs per Environment. Third-party actions are pinned to full commit SHAs.
+
+Every started probe writes a JSON receipt and archives it for 30 days, including failed probes. The
+receipt contains route and SNS/SQS message identifiers but no credentials or arbitrary message
+bodies. Environment approval is enforced only when protection rules are configured in GitHub, and
+the workflow still proves only the isolated canary route—not the production consumer or DLQ retry
+path. A successful workflow run is runtime evidence; the credential-free pull-request CI validates
+only the workflow and route-builder contracts.
+
 ## Files
 
 ```text
@@ -160,9 +185,12 @@ infra/
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
+├── build_network_incident_canary_route.py # fail-closed Environment route builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
 └── run_network_incident_delivery_canary.py # isolated live delivery probe
 tests/
+├── test_build_network_incident_canary_route.py # environment route-boundary tests
+├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
 ├── test_verify_network_incident_route.py # preflight unit and failure-path tests
 └── test_run_network_incident_delivery_canary.py # canary isolation and deletion tests
 ```
