@@ -1,0 +1,95 @@
+name: incident-delivery-canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Protected GitHub Environment containing the deployed route configuration
+        type: environment
+        required: true
+
+permissions: {}
+
+jobs:
+  canary:
+    name: OIDC delivery canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: incident-delivery-canary-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_CANARY_ROLE_ARN: ${{ vars.AWS_CANARY_ROLE_ARN }}
+      NETWORK_INCIDENT_TOPIC_ARN: ${{ vars.NETWORK_INCIDENT_TOPIC_ARN }}
+      NETWORK_INCIDENT_QUEUE_ARN: ${{ vars.NETWORK_INCIDENT_QUEUE_ARN }}
+      NETWORK_INCIDENT_DLQ_ARN: ${{ vars.NETWORK_INCIDENT_DLQ_ARN }}
+      NETWORK_INCIDENT_CANARY_QUEUE_ARN: ${{ vars.NETWORK_INCIDENT_CANARY_QUEUE_ARN }}
+
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate protected environment route
+        run: >-
+          python scripts/build_network_incident_canary_route.py
+          --topic-arn "$NETWORK_INCIDENT_TOPIC_ARN"
+          --queue-arn "$NETWORK_INCIDENT_QUEUE_ARN"
+          --dead-letter-queue-arn "$NETWORK_INCIDENT_DLQ_ARN"
+          --delivery-canary-queue-arn "$NETWORK_INCIDENT_CANARY_QUEUE_ARN"
+          --expected-account-id "$AWS_ACCOUNT_ID"
+          --expected-region "$AWS_REGION"
+          --output "$RUNNER_TEMP/incident-route.json"
+
+      - name: Exchange GitHub OIDC token for short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.AWS_CANARY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 900
+          role-session-name: incident-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          retry-max-attempts: 3
+          mask-aws-account-id: true
+
+      - name: Run bounded delivery canary
+        id: delivery-canary
+        shell: bash
+        run: |
+          set +e
+          python scripts/run_network_incident_delivery_canary.py \
+            "$RUNNER_TEMP/incident-route.json" \
+            --call-timeout-seconds 30 \
+            --receive-attempts 3 \
+            --wait-seconds 10 \
+            > "$RUNNER_TEMP/delivery-canary-receipt.json"
+          canary_status=$?
+          set -e
+          if [[ "$canary_status" -ne 0 ]]; then
+            echo "The isolated delivery canary failed; inspect the archived JSON receipt." >&2
+            exit "$canary_status"
+          fi
+
+      - name: Archive JSON receipt
+        if: ${{ always() && (steps.delivery-canary.outcome == 'success' || steps.delivery-canary.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: incident-delivery-canary-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/delivery-canary-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+          include-hidden-files: false
