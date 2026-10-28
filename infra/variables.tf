@@ -194,6 +194,147 @@ variable "network_incident_canary_role_arn" {
   }
 }
 
+variable "enable_network_incident_redrive_drill" {
+  type        = bool
+  default     = false
+  description = "Provision isolated non-production SQS redrive queues and an Environment-scoped GitHub OIDC runner role."
+}
+
+variable "network_incident_redrive_production_queue_arn" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Production queue ARN used only as a fail-closed isolation boundary; the drill role receives no access to it."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_production_queue_arn == null
+      || can(regex("^arn:aws[a-z-]*:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,80}$", var.network_incident_redrive_production_queue_arn))
+    )
+    error_message = "network_incident_redrive_production_queue_arn must be null or a canonical SQS queue ARN."
+  }
+}
+
+variable "network_incident_redrive_queue_name" {
+  type        = string
+  default     = "ml-platform-network-incidents-fault-injection"
+  description = "Dedicated non-production source queue name; its DLQ appends -dlq."
+
+  validation {
+    condition = (
+      length(var.network_incident_redrive_queue_name) >= 16
+      && length(var.network_incident_redrive_queue_name) <= 76
+      && can(regex("^[A-Za-z0-9_-]+-fault-injection$", var.network_incident_redrive_queue_name))
+    )
+    error_message = "network_incident_redrive_queue_name must end in -fault-injection, use SQS-safe characters, and leave room for the -dlq suffix."
+  }
+}
+
+variable "network_incident_redrive_max_receive_count" {
+  type        = number
+  default     = 3
+  description = "Bounded poison-message receives before the isolated message moves to the drill DLQ."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_max_receive_count >= 2
+      && var.network_incident_redrive_max_receive_count <= 5
+      && floor(var.network_incident_redrive_max_receive_count) == var.network_incident_redrive_max_receive_count
+    )
+    error_message = "network_incident_redrive_max_receive_count must be an integer from 2 to 5."
+  }
+}
+
+variable "network_incident_redrive_message_retention_seconds" {
+  type        = number
+  default     = 3600
+  description = "Short non-production retention backstop for source and DLQ cleanup failures."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_message_retention_seconds >= 900
+      && var.network_incident_redrive_message_retention_seconds <= 86400
+      && floor(var.network_incident_redrive_message_retention_seconds) == var.network_incident_redrive_message_retention_seconds
+    )
+    error_message = "network_incident_redrive_message_retention_seconds must be an integer from 900 to 86400."
+  }
+}
+
+variable "network_incident_redrive_visibility_timeout_seconds" {
+  type        = number
+  default     = 30
+  description = "Visibility timeout used by the bounded fault-injection retry loop."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_visibility_timeout_seconds >= 5
+      && var.network_incident_redrive_visibility_timeout_seconds <= 60
+      && floor(var.network_incident_redrive_visibility_timeout_seconds) == var.network_incident_redrive_visibility_timeout_seconds
+    )
+    error_message = "network_incident_redrive_visibility_timeout_seconds must be an integer from 5 to 60."
+  }
+}
+
+variable "network_incident_redrive_github_oidc_provider_arn" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Existing account-local GitHub Actions OIDC provider ARN; Terraform does not create the account-wide provider."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_github_oidc_provider_arn == null
+      || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:oidc-provider/token[.]actions[.]githubusercontent[.]com$", var.network_incident_redrive_github_oidc_provider_arn))
+    )
+    error_message = "network_incident_redrive_github_oidc_provider_arn must identify token.actions.githubusercontent.com."
+  }
+}
+
+variable "network_incident_redrive_github_repository" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "GitHub owner/repository allowed to assume the drill role through one protected Environment."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_github_repository == null
+      || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.network_incident_redrive_github_repository))
+    )
+    error_message = "network_incident_redrive_github_repository must be null or owner/repository."
+  }
+}
+
+variable "network_incident_redrive_github_environment" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Protected GitHub Environment bound into the OIDC subject claim."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_github_environment == null
+      || can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$", var.network_incident_redrive_github_environment))
+    )
+    error_message = "network_incident_redrive_github_environment must use 1-100 safe subject characters."
+  }
+}
+
+variable "network_incident_redrive_role_name" {
+  type        = string
+  default     = "network-incident-redrive-canary"
+  description = "IAM role name used only by the protected redrive workflow."
+
+  validation {
+    condition = (
+      length(var.network_incident_redrive_role_name) >= 1
+      && length(var.network_incident_redrive_role_name) <= 64
+      && can(regex("^[A-Za-z0-9+=,.@_-]+$", var.network_incident_redrive_role_name))
+    )
+    error_message = "network_incident_redrive_role_name must be a valid 1-64 character IAM role name."
+  }
+}
+
 variable "enable_vpc_flow_contributor_insights" {
   type        = bool
   default     = false
