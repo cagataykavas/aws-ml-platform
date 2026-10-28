@@ -30,6 +30,8 @@ flowchart LR
     SNS --> SQS[Encrypted governed subscriber]
     SQS --> DLQ[14-day dead-letter queue]
     SNS --> CANARY[Filtered delivery-canary queue]
+    OIDC[GitHub Environment OIDC] --> REDRIVE[Fault-injection queue]
+    REDRIVE --> REDRIVEDLQ[Fault-injection DLQ]
     IAM[Least-privilege ECS task role] --> ECS
 ```
 
@@ -198,8 +200,40 @@ an unrelated message appears. The archived receipt contains the receive-count se
 identifiers and a SHA-256 commitment to the route, not queue ARNs or message bodies.
 
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
-counts are eventually consistent, and the repository does not provision the fault queues, GitHub
-Environment protections or IAM/OIDC trust policy. No live AWS drill is run in pull-request CI.
+counts are eventually consistent. No live AWS drill is run in pull-request CI.
+
+### Opt-in redrive prerequisites
+
+Terraform can provision the two drill queues and its least-privilege runner role without granting
+that role any permission on production traffic. The account-wide GitHub OIDC provider remains an
+explicit input because silently creating or adopting a singleton identity provider is unsafe:
+
+```hcl
+enable_network_incident_redrive_drill             = true
+network_incident_redrive_production_queue_arn     = "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"
+network_incident_redrive_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+network_incident_redrive_github_repository        = "cagataykavas/aws-ml-platform"
+network_incident_redrive_github_environment       = "redrive-staging"
+```
+
+The trust policy requires both GitHub's `sts.amazonaws.com` audience and the exact
+`repo:owner/repository:environment:name` subject. The role can exercise only the two dedicated
+queues. Both queues use SQS-managed encryption, TLS-only resource policies, one-hour default
+retention, and a receive threshold constrained to 2–5. The DLQ admits redrive only from its paired
+source. The production ARN is validated in the deployment partition, Region and account, but is
+used only as a distinctness boundary and never appears in the role policy.
+
+After apply, copy the ready-to-use values into the protected Environment:
+
+```bash
+terraform -chdir=infra output -json network_incident_redrive_drill \
+  | jq '.github_environment_variables'
+```
+
+Terraform cannot create GitHub Environment reviewers or branch restrictions, so those repository
+settings remain a deployment prerequisite. The OIDC provider itself must already exist in the AWS
+account. Queue encryption is SQS-managed rather than customer-managed to keep this isolated drill
+independent from the production incident KMS boundary.
 
 ## Files
 
@@ -212,6 +246,7 @@ infra/
 ├── security.tf       # S3, KMS, Secrets Manager and IAM
 ├── observability.tf  # VPC Flow Logs, metrics, alarms and contributor rules
 ├── incident_route.tf # optional encrypted topic, governed queue and dead-letter route
+├── incident_redrive_drill.tf # opt-in isolated queues and Environment-scoped OIDC role
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
