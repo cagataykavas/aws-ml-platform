@@ -171,6 +171,36 @@ the workflow still proves only the isolated canary route—not the production co
 path. A successful workflow run is runtime evidence; the credential-free pull-request CI validates
 only the workflow and route-builder contracts.
 
+## Isolated dead-letter redrive drill
+
+The separate `incident-redrive-canary` workflow verifies retry exhaustion without sending to,
+receiving from, purging, or deleting from the production incident queue. It requires a protected
+non-production Environment with two empty standard queues whose names end in `-fault-injection` and
+`-fault-injection-dlq`. The source queue must have a `maxReceiveCount` from 2 through 5 and the DLQ
+must use `byQueue` redrive permission scoped only to that source.
+
+Configure these Environment variables:
+
+- `AWS_REGION`, `AWS_ACCOUNT_ID` and `AWS_REDRIVE_CANARY_ROLE_ARN`;
+- `NETWORK_INCIDENT_QUEUE_ARN`, used only as the production boundary that the drill must not equal;
+- `NETWORK_INCIDENT_FAULT_QUEUE_ARN` and `NETWORK_INCIDENT_FAULT_DLQ_ARN`.
+
+The workflow validates all ARNs before requesting credentials, then exchanges GitHub OIDC identity
+for a 15-minute session. The role should grant only `sqs:GetQueueUrl`, `sqs:GetQueueAttributes`,
+`sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:ChangeMessageVisibility` and `sqs:DeleteMessage` on the
+two fault-injection queues; it needs no permission on the production queue.
+
+The drill writes one uniquely correlated poison canary directly to the isolated source, repeatedly
+returns only that exact message to visibility until the live bounded receive policy is exhausted,
+observes the exact body in the DLQ, and deletes only the verified DLQ copy. It fails closed when the
+queues are non-empty, their live identities or policies differ, receive counts do not increase, or
+an unrelated message appears. The archived receipt contains the receive-count sequence, message
+identifiers and a SHA-256 commitment to the route, not queue ARNs or message bodies.
+
+This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
+counts are eventually consistent, and the repository does not provision the fault queues, GitHub
+Environment protections or IAM/OIDC trust policy. No live AWS drill is run in pull-request CI.
+
 ## Files
 
 ```text
@@ -186,13 +216,18 @@ infra/
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
 ├── build_network_incident_canary_route.py # fail-closed Environment route builder
+├── build_network_incident_redrive_route.py # non-production redrive boundary builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
-└── run_network_incident_delivery_canary.py # isolated live delivery probe
+├── run_network_incident_delivery_canary.py # isolated live delivery probe
+└── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
 ├── test_build_network_incident_canary_route.py # environment route-boundary tests
+├── test_build_network_incident_redrive_route.py # fault-route boundary tests
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
+├── test_redrive_canary_workflow.py # redrive workflow security contract
 ├── test_verify_network_incident_route.py # preflight unit and failure-path tests
-└── test_run_network_incident_delivery_canary.py # canary isolation and deletion tests
+├── test_run_network_incident_delivery_canary.py # canary isolation and deletion tests
+└── test_run_network_incident_redrive_canary.py # bounded retry and DLQ tests
 ```
 
 ## Broader AWS service map

@@ -184,6 +184,32 @@ The canary proves the dedicated topic-to-queue path and runner KMS permissions. 
 alarm state, read or delete production incident traffic, execute the production consumer, or prove
 redrive behavior. Keep the opt-in queue disabled where a live delivery gate is unnecessary.
 
+### Non-production redrive canary
+
+Use the manually dispatched `incident-redrive-canary` workflow when a deployment gate must verify
+the live SQS retry and dead-letter policy. The workflow requires a separately protected GitHub
+Environment, a dedicated source queue ending in `-fault-injection`, and its matching `-dlq`. The
+production consumer ARN is validated only as a boundary: the source and DLQ must be different ARNs
+in the same account and Region, and the runtime never resolves or calls the production queue.
+
+Before credentials are requested, the route builder validates the expected account, Region, naming
+contract and distinct queue identities. After OIDC exchange, the runtime verifies that both queue
+URLs resolve to the declared ARNs, the source has a bounded `maxReceiveCount` of 2–5, the DLQ admits
+redrive from only that source, and both approximate visible/in-flight counts are zero. It then sends
+one exact poison payload, forces repeated visibility only for that payload, observes it in the DLQ,
+and deletes only the verified DLQ message. Unrelated traffic, malformed receive counts, policy drift
+and exhausted polling fail closed.
+
+The receipt commits to the complete route with SHA-256 and records bounded receive evidence without
+including queue ARNs or message bodies. Configure the OIDC role without any production-queue
+permission and scope its SQS calls to the two fault queues. A failed run attempts to delete the last
+known source receipt, but AWS may reject a stale handle; short non-production retention remains a
+required backstop.
+
+This drill deterministically emulates a consumer that refuses the poison message. It does not invoke
+the real application consumer, validate Lambda/ECS error handling, prove queue-count freshness, or
+exercise production traffic. Pull-request CI uses fake AWS responses and makes no live AWS claim.
+
 The queue fails closed unless the managed topic, consumer role and independent escalation action
 are all supplied. It does not
 create the consumer workload, automated redrive, paging workflow or cross-account access. Those
