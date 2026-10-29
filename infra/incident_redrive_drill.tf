@@ -188,6 +188,15 @@ resource "aws_iam_role_policy" "network_incident_redrive_canary" {
         ]
         Resource = local.network_incident_redrive_fault_dlq_arn
       },
+      {
+        Sid    = "InspectCanaryBoundary"
+        Effect = "Allow"
+        Action = [
+          "iam:GetRole",
+          "iam:GetRolePolicy",
+        ]
+        Resource = local.network_incident_redrive_role_arn
+      },
     ]
   })
 }
@@ -244,12 +253,13 @@ output "network_incident_redrive_drill" {
     redrive_canary_role_arn     = local.network_incident_redrive_role_arn
     github_oidc_subject         = local.network_incident_redrive_oidc_subject
     github_environment_variables = {
-      AWS_REGION                       = var.aws_region
-      AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
-      AWS_REDRIVE_CANARY_ROLE_ARN      = local.network_incident_redrive_role_arn
-      NETWORK_INCIDENT_QUEUE_ARN       = var.network_incident_redrive_production_queue_arn
-      NETWORK_INCIDENT_FAULT_QUEUE_ARN = local.network_incident_redrive_fault_queue_arn
-      NETWORK_INCIDENT_FAULT_DLQ_ARN   = local.network_incident_redrive_fault_dlq_arn
+      AWS_REGION                            = var.aws_region
+      AWS_ACCOUNT_ID                        = data.aws_caller_identity.current.account_id
+      AWS_REDRIVE_CANARY_ROLE_ARN           = local.network_incident_redrive_role_arn
+      NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT = local.network_incident_redrive_oidc_subject
+      NETWORK_INCIDENT_QUEUE_ARN            = var.network_incident_redrive_production_queue_arn
+      NETWORK_INCIDENT_FAULT_QUEUE_ARN      = local.network_incident_redrive_fault_queue_arn
+      NETWORK_INCIDENT_FAULT_DLQ_ARN        = local.network_incident_redrive_fault_dlq_arn
     }
   } : null
   description = "Isolated redrive route and protected GitHub Environment values; null when disabled."

@@ -184,11 +184,19 @@ must use `byQueue` redrive permission scoped only to that source.
 Configure these Environment variables:
 
 - `AWS_REGION`, `AWS_ACCOUNT_ID` and `AWS_REDRIVE_CANARY_ROLE_ARN`;
+- `NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT`, copied from Terraform to bind the live trust check;
 - `NETWORK_INCIDENT_QUEUE_ARN`, used only as the production boundary that the drill must not equal;
 - `NETWORK_INCIDENT_FAULT_QUEUE_ARN` and `NETWORK_INCIDENT_FAULT_DLQ_ARN`.
 
 The workflow validates all ARNs before requesting credentials, then exchanges GitHub OIDC identity
-for a 15-minute session. The role should grant only `sqs:GetQueueUrl`, `sqs:GetQueueAttributes`,
+for a 15-minute session. Before any data-plane call, a read-only preflight verifies that the active
+caller is the expected role; its live trust policy still binds the exact GitHub provider, audience
+and Environment subject; its inline policy has not broadened; and both queues retain their reviewed
+identity, encryption, retention, TLS-only resource policy and redrive settings. The preflight receipt
+contains a route commitment and named check results, not ARNs or policy documents.
+
+The role grants `iam:GetRole` and `iam:GetRolePolicy` only on itself for this drift gate. Its SQS
+permissions remain limited to `sqs:GetQueueUrl`, `sqs:GetQueueAttributes`,
 `sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:ChangeMessageVisibility` and `sqs:DeleteMessage` on the
 two fault-injection queues; it needs no permission on the production queue.
 
@@ -253,6 +261,7 @@ scripts/
 ├── build_network_incident_canary_route.py # fail-closed Environment route builder
 ├── build_network_incident_redrive_route.py # non-production redrive boundary builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
+├── verify_network_incident_redrive_prerequisites.py # live IAM/SQS drift gate
 ├── run_network_incident_delivery_canary.py # isolated live delivery probe
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
