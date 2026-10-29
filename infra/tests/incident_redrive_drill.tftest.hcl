@@ -125,6 +125,11 @@ run "redrive_drill_binds_oidc_to_one_environment" {
       ])
       && jsondecode(aws_iam_role_policy.network_incident_redrive_canary[0].policy).Statement[0].Resource == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-fault-injection"
       && jsondecode(aws_iam_role_policy.network_incident_redrive_canary[0].policy).Statement[1].Resource == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-fault-injection-dlq"
+      && toset(jsondecode(aws_iam_role_policy.network_incident_redrive_canary[0].policy).Statement[2].Action) == toset([
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+      ])
+      && jsondecode(aws_iam_role_policy.network_incident_redrive_canary[0].policy).Statement[2].Resource == "arn:aws:iam::123456789012:role/network-incident-redrive-canary"
       && !strcontains(aws_iam_role_policy.network_incident_redrive_canary[0].policy, "ml-platform-network-incidents-consumer")
     )
     error_message = "The role policy must contain only the drill actions and never the production queue."
@@ -135,6 +140,7 @@ run "redrive_drill_binds_oidc_to_one_environment" {
       output.network_incident_redrive_drill.github_environment_variables.AWS_REGION == "eu-central-1"
       && output.network_incident_redrive_drill.github_environment_variables.AWS_ACCOUNT_ID == "123456789012"
       && output.network_incident_redrive_drill.github_environment_variables.AWS_REDRIVE_CANARY_ROLE_ARN == "arn:aws:iam::123456789012:role/network-incident-redrive-canary"
+      && output.network_incident_redrive_drill.github_environment_variables.NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT == "repo:cagataykavas/aws-ml-platform:environment:redrive-staging"
       && output.network_incident_redrive_drill.github_environment_variables.NETWORK_INCIDENT_QUEUE_ARN == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"
       && output.network_incident_redrive_drill.github_environment_variables.NETWORK_INCIDENT_FAULT_QUEUE_ARN == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-fault-injection"
       && output.network_incident_redrive_drill.github_environment_variables.NETWORK_INCIDENT_FAULT_DLQ_ARN == "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-fault-injection-dlq"

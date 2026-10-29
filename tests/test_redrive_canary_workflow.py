@@ -28,6 +28,17 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
         self.assertIn("--fault-dead-letter-queue-arn", self.workflow)
         self.assertIn("--redrive-canary-role-arn", self.workflow)
 
+    def test_verifies_live_boundary_before_data_plane_drill(self) -> None:
+        credentials = self.workflow.index("Exchange GitHub OIDC token")
+        preflight = self.workflow.index("Verify live IAM and SQS drill boundary")
+        drill = self.workflow.index("Run bounded poison-message redrive drill")
+
+        self.assertLess(credentials, preflight)
+        self.assertLess(preflight, drill)
+        self.assertIn("verify_network_incident_redrive_prerequisites.py", self.workflow)
+        self.assertIn("NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT", self.workflow)
+        self.assertIn("redrive-preflight-receipt.json", self.workflow)
+
     def test_uses_only_short_lived_oidc_credentials(self) -> None:
         self.assertIn("permissions: {}", self.workflow)
         self.assertIn("contents: read", self.workflow)
@@ -51,6 +62,7 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
         self.assertIn("--dlq-receive-attempts 5", self.workflow)
         self.assertIn("--wait-seconds 5", self.workflow)
         self.assertIn("steps.redrive-canary.outcome == 'failure'", self.workflow)
+        self.assertIn("steps.redrive-preflight.outcome == 'failure'", self.workflow)
         self.assertIn("retention-days: 30", self.workflow)
 
 

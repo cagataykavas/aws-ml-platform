@@ -26,6 +26,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REDRIVE_CANARY_ROLE_ARN: ${{ vars.AWS_REDRIVE_CANARY_ROLE_ARN }}
+      NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT: ${{ vars.NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT }}
       NETWORK_INCIDENT_QUEUE_ARN: ${{ vars.NETWORK_INCIDENT_QUEUE_ARN }}
       NETWORK_INCIDENT_FAULT_QUEUE_ARN: ${{ vars.NETWORK_INCIDENT_FAULT_QUEUE_ARN }}
       NETWORK_INCIDENT_FAULT_DLQ_ARN: ${{ vars.NETWORK_INCIDENT_FAULT_DLQ_ARN }}
@@ -64,6 +65,16 @@ jobs:
           retry-max-attempts: 3
           mask-aws-account-id: true
 
+      - name: Verify live IAM and SQS drill boundary
+        id: redrive-preflight
+        run: >-
+          python scripts/verify_network_incident_redrive_prerequisites.py
+          "$RUNNER_TEMP/redrive-route.json"
+          --role-arn "$AWS_REDRIVE_CANARY_ROLE_ARN"
+          --expected-oidc-subject "$NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT"
+          --timeout-seconds 30
+          > "$RUNNER_TEMP/redrive-preflight-receipt.json"
+
       - name: Run bounded poison-message redrive drill
         id: redrive-canary
         shell: bash
@@ -83,11 +94,11 @@ jobs:
           fi
 
       - name: Archive JSON receipt
-        if: ${{ always() && (steps.redrive-canary.outcome == 'success' || steps.redrive-canary.outcome == 'failure') }}
+        if: ${{ always() && (steps.redrive-preflight.outcome == 'success' || steps.redrive-preflight.outcome == 'failure' || steps.redrive-canary.outcome == 'success' || steps.redrive-canary.outcome == 'failure') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: incident-redrive-canary-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/redrive-canary-receipt.json
+          path: ${{ runner.temp }}/redrive-*-receipt.json
           if-no-files-found: error
           retention-days: 30
           overwrite: false
