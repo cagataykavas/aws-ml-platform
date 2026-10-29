@@ -51,6 +51,7 @@ DLQ_ACTIONS = frozenset(
 SELF_INSPECTION_ACTIONS = frozenset({"iam:getrole", "iam:getrolepolicy"})
 POLICY_NAME = "network-incident-redrive-canary"
 SUBJECT_PATTERN = re.compile(r"repo:[^/\s:]+/[^\s:]+:environment:[^\s]+")
+AUTHORIZATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
 @dataclass(frozen=True)
@@ -91,9 +92,13 @@ def verify(
     role: RoleBoundary,
     expected_oidc_subject: str,
     aws: AwsClient,
+    *,
+    authorization_id: str,
 ) -> dict[str, Any]:
     if SUBJECT_PATTERN.fullmatch(expected_oidc_subject) is None:
         raise ValueError("expected OIDC subject must bind one repository Environment")
+    if AUTHORIZATION_ID_PATTERN.fullmatch(authorization_id) is None:
+        raise ValueError("authorization_id must be a stable 1-128 character identifier")
     checks: list[Check] = []
 
     def check(name: str, condition: bool, success: str, failure: str) -> None:
@@ -213,6 +218,9 @@ def verify(
     ).hexdigest()
     return {
         "status": "pass" if all(item.passed for item in checks) else "fail",
+        "schema_version": 1,
+        "authorization_id": authorization_id,
+        "queue_route_sha256": route.digest(),
         "route_sha256": route_digest,
         "checks": [item.__dict__ for item in checks],
     }
@@ -341,6 +349,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--role-arn", required=True)
     parser.add_argument("--expected-oidc-subject", required=True)
+    parser.add_argument("--authorization-id", required=True)
     parser.add_argument("--aws-cli", default="aws")
     parser.add_argument("--timeout-seconds", type=int, default=30)
     return parser
@@ -359,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             role,
             args.expected_oidc_subject,
             AwsCli(executable=args.aws_cli, timeout_seconds=args.timeout_seconds),
+            authorization_id=args.authorization_id,
         )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
         result = {"status": "error", "error": str(exc)}

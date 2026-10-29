@@ -193,7 +193,11 @@ for a 15-minute session. Before any data-plane call, a read-only preflight verif
 caller is the expected role; its live trust policy still binds the exact GitHub provider, audience
 and Environment subject; its inline policy has not broadened; and both queues retain their reviewed
 identity, encryption, retention, TLS-only resource policy and redrive settings. The preflight receipt
-contains a route commitment and named check results, not ARNs or policy documents.
+contains a queue-route commitment, a broader boundary commitment, the workflow run/attempt
+authorization identifier and named check results, not ARNs or policy documents. The canary refuses
+to make data-plane calls unless that receipt is passing, complete, bound to the current run and exact
+queue route, and canonicalizable. Its SHA-256 commitment is embedded in both the poison payload and
+the final canary receipt, linking the reviewed live boundary to the observed drill execution.
 
 The role grants `iam:GetRole` and `iam:GetRolePolicy` only on itself for this drift gate. Its SQS
 permissions remain limited to `sqs:GetQueueUrl`, `sqs:GetQueueAttributes`,
@@ -206,6 +210,7 @@ observes the exact body in the DLQ, and deletes only the verified DLQ copy. It f
 queues are non-empty, their live identities or policies differ, receive counts do not increase, or
 an unrelated message appears. The archived receipt contains the receive-count sequence, message
 identifiers and a SHA-256 commitment to the route, not queue ARNs or message bodies.
+It also records the SHA-256 commitment of the exact preflight receipt that authorized the run.
 
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
 counts are eventually consistent. No live AWS drill is run in pull-request CI.

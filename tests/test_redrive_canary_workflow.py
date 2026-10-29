@@ -15,7 +15,9 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
     def test_requires_protected_environment_and_serializes_it(self) -> None:
         self.assertIn("type: environment", self.workflow)
         self.assertIn("environment: ${{ inputs.environment }}", self.workflow)
-        self.assertIn("group: incident-redrive-canary-${{ inputs.environment }}", self.workflow)
+        self.assertIn(
+            "group: incident-redrive-canary-${{ inputs.environment }}", self.workflow
+        )
         self.assertIn("cancel-in-progress: false", self.workflow)
 
     def test_validates_nonproduction_route_before_oidc_exchange(self) -> None:
@@ -38,6 +40,13 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
         self.assertIn("verify_network_incident_redrive_prerequisites.py", self.workflow)
         self.assertIn("NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT", self.workflow)
         self.assertIn("redrive-preflight-receipt.json", self.workflow)
+        self.assertIn(
+            '--authorization-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"', self.workflow
+        )
+        self.assertIn(
+            '--preflight-receipt "$RUNNER_TEMP/redrive-preflight-receipt.json"',
+            self.workflow,
+        )
 
     def test_uses_only_short_lived_oidc_credentials(self) -> None:
         self.assertIn("permissions: {}", self.workflow)
