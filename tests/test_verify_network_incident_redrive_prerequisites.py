@@ -18,6 +18,7 @@ FAULT_ARN = (
 DLQ_ARN = f"{FAULT_ARN}-dlq"
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/network-incident-redrive-canary"
 SUBJECT = "repo:cagataykavas/aws-ml-platform:environment:redrive-staging"
+AUTHORIZATION_ID = "40903776746:1"
 
 
 def route() -> RedriveRoute:
@@ -167,12 +168,21 @@ class RedrivePrerequisiteVerifierTests(unittest.TestCase):
     def run_verify(self, payloads: dict[str, Any]) -> dict[str, Any]:
         active_route = route()
         role = RoleBoundary.parse(ROLE_ARN, active_route)
-        return verify(active_route, role, SUBJECT, FakeAws(payloads))
+        return verify(
+            active_route,
+            role,
+            SUBJECT,
+            FakeAws(payloads),
+            authorization_id=AUTHORIZATION_ID,
+        )
 
     def test_accepts_exact_live_terraform_contract(self) -> None:
         result = self.run_verify(responses())
 
         self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["schema_version"], 1)
+        self.assertEqual(result["authorization_id"], AUTHORIZATION_ID)
+        self.assertEqual(result["queue_route_sha256"], route().digest())
         self.assertEqual(len(result["route_sha256"]), 64)
         self.assertTrue(all(item["passed"] for item in result["checks"]))
 
@@ -244,6 +254,7 @@ class RedrivePrerequisiteVerifierTests(unittest.TestCase):
                 role,
                 "repo:owner/repo:ref:main",
                 FakeAws(copy.deepcopy(responses())),
+                authorization_id=AUTHORIZATION_ID,
             )
 
 

@@ -200,6 +200,12 @@ one exact poison payload, forces repeated visibility only for that payload, obse
 and deletes only the verified DLQ message. Unrelated traffic, malformed receive counts, policy drift
 and exhausted polling fail closed.
 
+The drill additionally requires the passing live-boundary receipt from the immediately preceding
+preflight. It verifies the exact check set, current workflow run/attempt authorization identifier and
+queue-route commitment before any SQS call. A canonical SHA-256 commitment to that receipt travels
+inside the poison message and final receipt, so archived evidence can link one boundary decision to
+one execution without exposing IAM policies or queue ARNs.
+
 The receipt commits to the complete route with SHA-256 and records bounded receive evidence without
 including queue ARNs or message bodies. Configure the OIDC role without any production-queue
 permission and scope its SQS calls to the two fault queues. A failed run attempts to delete the last

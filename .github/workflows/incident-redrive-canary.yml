@@ -72,6 +72,7 @@ jobs:
           "$RUNNER_TEMP/redrive-route.json"
           --role-arn "$AWS_REDRIVE_CANARY_ROLE_ARN"
           --expected-oidc-subject "$NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT"
+          --authorization-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"
           --timeout-seconds 30
           > "$RUNNER_TEMP/redrive-preflight-receipt.json"
 
@@ -82,6 +83,8 @@ jobs:
           set +e
           python scripts/run_network_incident_redrive_canary.py \
             "$RUNNER_TEMP/redrive-route.json" \
+            --preflight-receipt "$RUNNER_TEMP/redrive-preflight-receipt.json" \
+            --authorization-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" \
             --call-timeout-seconds 30 \
             --dlq-receive-attempts 5 \
             --wait-seconds 5 \
