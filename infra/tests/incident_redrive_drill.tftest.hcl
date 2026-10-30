@@ -262,7 +262,7 @@ run "redrive_archive_is_compliance_locked_and_least_privilege" {
       && aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive[0].block_public_policy
       && aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive[0].ignore_public_acls
       && aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive[0].restrict_public_buckets
-      && aws_s3_bucket_server_side_encryption_configuration.network_incident_redrive_evidence_archive[0].rule[0].apply_server_side_encryption_by_default[0].sse_algorithm == "AES256"
+      && one(aws_s3_bucket_server_side_encryption_configuration.network_incident_redrive_evidence_archive[0].rule).apply_server_side_encryption_by_default[0].sse_algorithm == "AES256"
     )
     error_message = "The evidence archive must use versioning, compliance Object Lock, full public blocking and encryption."
   }
