@@ -349,11 +349,11 @@ variable "network_incident_redrive_evidence_archive_bucket_name" {
 
   validation {
     condition = var.network_incident_redrive_evidence_archive_bucket_name == null ? true : (
-        length(var.network_incident_redrive_evidence_archive_bucket_name) >= 3
-        && length(var.network_incident_redrive_evidence_archive_bucket_name) <= 63
-        && can(regex("^[a-z0-9][a-z0-9.-]*[a-z0-9]$", var.network_incident_redrive_evidence_archive_bucket_name))
-        && !can(regex("[.][.]|[-][.]|[.][-]", var.network_incident_redrive_evidence_archive_bucket_name))
-        && !can(regex("^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$", var.network_incident_redrive_evidence_archive_bucket_name))
+      length(var.network_incident_redrive_evidence_archive_bucket_name) >= 3
+      && length(var.network_incident_redrive_evidence_archive_bucket_name) <= 63
+      && can(regex("^[a-z0-9][a-z0-9.-]*[a-z0-9]$", var.network_incident_redrive_evidence_archive_bucket_name))
+      && !can(regex("[.][.]|[-][.]|[.][-]", var.network_incident_redrive_evidence_archive_bucket_name))
+      && !can(regex("^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$", var.network_incident_redrive_evidence_archive_bucket_name))
     )
     error_message = "network_incident_redrive_evidence_archive_bucket_name must be null or a canonical 3-63 character S3 bucket name."
   }
