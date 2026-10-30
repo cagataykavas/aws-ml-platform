@@ -18,6 +18,7 @@ try:
         AwsCli,
         AwsClient,
         _json_object,
+        _parse_arn,
         _statements,
     )
 except ModuleNotFoundError:  # Direct execution from the scripts directory.
@@ -26,6 +27,7 @@ except ModuleNotFoundError:  # Direct execution from the scripts directory.
         AwsCli,
         AwsClient,
         _json_object,
+        _parse_arn,
         _statements,
     )
 
@@ -49,9 +51,17 @@ DLQ_ACTIONS = frozenset(
     }
 )
 SELF_INSPECTION_ACTIONS = frozenset({"iam:getrole", "iam:getrolepolicy"})
+EVIDENCE_SIGNING_ACTIONS = frozenset(
+    {"kms:describekey", "kms:getpublickey", "kms:sign", "kms:verify"}
+)
 POLICY_NAME = "network-incident-redrive-canary"
+EVIDENCE_POLICY_NAME = "network-incident-redrive-evidence"
 SUBJECT_PATTERN = re.compile(r"repo:[^/\s:]+/[^\s:]+:environment:[^\s]+")
 AUTHORIZATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+KMS_KEY_RESOURCE_PATTERN = re.compile(
+    r"key/(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|"
+    r"mrk-[0-9a-f]{32})"
+)
 
 
 @dataclass(frozen=True)
@@ -90,6 +100,7 @@ class Check:
 def verify(
     route: RedriveRoute,
     role: RoleBoundary,
+    evidence_key_arn: str,
     expected_oidc_subject: str,
     aws: AwsClient,
     *,
@@ -99,6 +110,18 @@ def verify(
         raise ValueError("expected OIDC subject must bind one repository Environment")
     if AUTHORIZATION_ID_PATTERN.fullmatch(authorization_id) is None:
         raise ValueError("authorization_id must be a stable 1-128 character identifier")
+    key_partition, _, key_region, key_account_id, key_resource = _parse_arn(
+        evidence_key_arn, expected_service="kms"
+    )
+    if (
+        key_partition != route.partition
+        or key_region != route.region
+        or key_account_id != route.account_id
+        or KMS_KEY_RESOURCE_PATTERN.fullmatch(key_resource) is None
+    ):
+        raise ValueError(
+            "evidence signing key must be a canonical KMS key ARN in the route Region and account"
+        )
     checks: list[Check] = []
 
     def check(name: str, condition: bool, success: str, failure: str) -> None:
@@ -139,10 +162,19 @@ def verify(
             policy_name=POLICY_NAME,
         ).get("PolicyDocument")
     )
+    evidence_policy = _json_object(
+        aws.call(
+            "iam",
+            "get-role-policy",
+            role_name=role.name,
+            policy_name=EVIDENCE_POLICY_NAME,
+        ).get("PolicyDocument")
+    )
     check(
         "least-privilege-role-policy",
-        _exact_role_policy(policy, route, role),
-        "inline role policy contains only the two drill routes and self-inspection",
+        _exact_role_policy(policy, route, role)
+        and _exact_evidence_policy(evidence_policy, evidence_key_arn),
+        "inline role policy contains only the drill routes, self-inspection and evidence key",
         "inline role policy is broader than or differs from the reviewed contract",
     )
 
@@ -210,6 +242,7 @@ def verify(
                 "fault_queue_arn": route.fault_queue_arn,
                 "production_queue_arn": route.production_queue_arn,
                 "role_arn": role.arn,
+                "evidence_key_arn": evidence_key_arn,
                 "subject": expected_oidc_subject,
             },
             separators=(",", ":"),
@@ -266,6 +299,17 @@ def _exact_role_policy(
         for sid, (actions, resource) in expected.items()
         for statement in [by_sid[sid]]
     ) and route.production_queue_arn not in json.dumps(policy, sort_keys=True)
+
+
+def _exact_evidence_policy(policy: dict[str, Any], evidence_key_arn: str) -> bool:
+    statements = _statements(policy)
+    return (
+        len(statements) == 1
+        and statements[0].get("Sid") == "SignDrillEvidence"
+        and statements[0].get("Effect") == "Allow"
+        and _actions(statements[0].get("Action")) == EVIDENCE_SIGNING_ACTIONS
+        and statements[0].get("Resource") == evidence_key_arn
+    )
 
 
 def _exact_queue_policy(
@@ -348,6 +392,7 @@ def _parser() -> argparse.ArgumentParser:
         "route_json", help="Validated redrive route JSON, or '-' for stdin."
     )
     parser.add_argument("--role-arn", required=True)
+    parser.add_argument("--evidence-key-arn", required=True)
     parser.add_argument("--expected-oidc-subject", required=True)
     parser.add_argument("--authorization-id", required=True)
     parser.add_argument("--aws-cli", default="aws")
@@ -366,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         result = verify(
             route,
             role,
+            args.evidence_key_arn,
             args.expected_oidc_subject,
             AwsCli(executable=args.aws_cli, timeout_seconds=args.timeout_seconds),
             authorization_id=args.authorization_id,

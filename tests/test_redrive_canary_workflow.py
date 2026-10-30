@@ -39,6 +39,11 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
         self.assertLess(preflight, drill)
         self.assertIn("verify_network_incident_redrive_prerequisites.py", self.workflow)
         self.assertIn("NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT", self.workflow)
+        self.assertIn("NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN", self.workflow)
+        self.assertIn(
+            '--evidence-key-arn "$NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN"',
+            self.workflow,
+        )
         self.assertIn("redrive-preflight-receipt.json", self.workflow)
         self.assertIn(
             '--authorization-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"', self.workflow
@@ -46,6 +51,25 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
         self.assertIn(
             '--preflight-receipt "$RUNNER_TEMP/redrive-preflight-receipt.json"',
             self.workflow,
+        )
+
+    def test_signs_and_verifies_paired_evidence_before_archive(self) -> None:
+        drill = self.workflow.index("Run bounded poison-message redrive drill")
+        sealing = self.workflow.index("Sign and verify the paired evidence")
+        archive = self.workflow.index("Archive JSON evidence")
+
+        self.assertLess(drill, sealing)
+        self.assertLess(sealing, archive)
+        self.assertIn("seal_network_incident_redrive_evidence.py", self.workflow)
+        self.assertIn(
+            '--canary-receipt "$RUNNER_TEMP/redrive-canary-receipt.json"', self.workflow
+        )
+        self.assertIn(
+            '--kms-key-arn "$NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN"', self.workflow
+        )
+        self.assertIn("redrive-evidence-envelope.json", self.workflow)
+        self.assertNotIn(
+            "redrive-route.json\n            ${{ runner.temp }}", self.workflow
         )
 
     def test_uses_only_short_lived_oidc_credentials(self) -> None:
@@ -72,6 +96,7 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
         self.assertIn("--wait-seconds 5", self.workflow)
         self.assertIn("steps.redrive-canary.outcome == 'failure'", self.workflow)
         self.assertIn("steps.redrive-preflight.outcome == 'failure'", self.workflow)
+        self.assertIn("steps.redrive-evidence.outcome == 'failure'", self.workflow)
         self.assertIn("retention-days: 30", self.workflow)
 
 

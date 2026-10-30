@@ -17,6 +17,7 @@ FAULT_ARN = (
 )
 DLQ_ARN = f"{FAULT_ARN}-dlq"
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/network-incident-redrive-canary"
+KEY_ARN = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/12345678-1234-4234-8234-123456789012"
 SUBJECT = "repo:cagataykavas/aws-ml-platform:environment:redrive-staging"
 AUTHORIZATION_ID = "40903776746:1"
 
@@ -122,6 +123,24 @@ def responses() -> dict[str, Any]:
                 ],
             }
         },
+        "evidence_policy": {
+            "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "SignDrillEvidence",
+                        "Effect": "Allow",
+                        "Action": [
+                            "kms:DescribeKey",
+                            "kms:GetPublicKey",
+                            "kms:Sign",
+                            "kms:Verify",
+                        ],
+                        "Resource": KEY_ARN,
+                    }
+                ],
+            }
+        },
         "source": {
             "QueueArn": FAULT_ARN,
             "SqsManagedSseEnabled": "true",
@@ -155,7 +174,11 @@ class FakeAws:
         if (service, operation) == ("iam", "get-role"):
             return self.payloads["role"]
         if (service, operation) == ("iam", "get-role-policy"):
-            return self.payloads["role_policy"]
+            return self.payloads[
+                "evidence_policy"
+                if parameters["policy_name"] == "network-incident-redrive-evidence"
+                else "role_policy"
+            ]
         if (service, operation) == ("sqs", "get-queue-url"):
             return {"QueueUrl": f"https://sqs.example/{parameters['queue_name']}"}
         if (service, operation) == ("sqs", "get-queue-attributes"):
@@ -171,6 +194,7 @@ class RedrivePrerequisiteVerifierTests(unittest.TestCase):
         return verify(
             active_route,
             role,
+            KEY_ARN,
             SUBJECT,
             FakeAws(payloads),
             authorization_id=AUTHORIZATION_ID,
@@ -219,6 +243,21 @@ class RedrivePrerequisiteVerifierTests(unittest.TestCase):
             )["passed"]
         )
 
+    def test_rejects_broadened_evidence_policy(self) -> None:
+        payloads = responses()
+        payloads["evidence_policy"]["PolicyDocument"]["Statement"][0]["Resource"] = "*"
+
+        result = self.run_verify(payloads)
+
+        self.assertEqual(result["status"], "fail")
+        self.assertFalse(
+            next(
+                item
+                for item in result["checks"]
+                if item["name"] == "least-privilege-role-policy"
+            )["passed"]
+        )
+
     def test_rejects_queue_policy_and_redrive_drift(self) -> None:
         payloads = responses()
         payloads["source"]["RedrivePolicy"]["maxReceiveCount"] = "9"
@@ -252,7 +291,21 @@ class RedrivePrerequisiteVerifierTests(unittest.TestCase):
             verify(
                 active_route,
                 role,
+                KEY_ARN,
                 "repo:owner/repo:ref:main",
+                FakeAws(copy.deepcopy(responses())),
+                authorization_id=AUTHORIZATION_ID,
+            )
+
+    def test_rejects_evidence_key_outside_route_boundary(self) -> None:
+        active_route = route()
+        role = RoleBoundary.parse(ROLE_ARN, active_route)
+        with self.assertRaisesRegex(ValueError, "route Region and account"):
+            verify(
+                active_route,
+                role,
+                KEY_ARN.replace(REGION, "us-east-1"),
+                SUBJECT,
                 FakeAws(copy.deepcopy(responses())),
                 authorization_id=AUTHORIZATION_ID,
             )

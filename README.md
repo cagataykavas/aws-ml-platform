@@ -185,6 +185,7 @@ Configure these Environment variables:
 
 - `AWS_REGION`, `AWS_ACCOUNT_ID` and `AWS_REDRIVE_CANARY_ROLE_ARN`;
 - `NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT`, copied from Terraform to bind the live trust check;
+- `NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN`, the dedicated asymmetric KMS key;
 - `NETWORK_INCIDENT_QUEUE_ARN`, used only as the production boundary that the drill must not equal;
 - `NETWORK_INCIDENT_FAULT_QUEUE_ARN` and `NETWORK_INCIDENT_FAULT_DLQ_ARN`.
 
@@ -199,10 +200,18 @@ to make data-plane calls unless that receipt is passing, complete, bound to the 
 queue route, and canonicalizable. Its SHA-256 commitment is embedded in both the poison payload and
 the final canary receipt, linking the reviewed live boundary to the observed drill execution.
 
+After the canary passes, the same short-lived identity asks the dedicated KMS P-256 key to sign a
+canonical evidence envelope. The envelope commits to the authorization identifier, queue route,
+exact preflight receipt, exact canary receipt and immutable signing-key revision. The workflow
+checks the KMS signature before archiving it. The envelope contains commitments and public-key
+material for independent verification, not queue ARNs, IAM documents or message bodies.
+
 The role grants `iam:GetRole` and `iam:GetRolePolicy` only on itself for this drift gate. Its SQS
 permissions remain limited to `sqs:GetQueueUrl`, `sqs:GetQueueAttributes`,
 `sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:ChangeMessageVisibility` and `sqs:DeleteMessage` on the
 two fault-injection queues; it needs no permission on the production queue.
+The same inline policy grants only `kms:DescribeKey`, `kms:GetPublicKey`, `kms:Sign` and `kms:Verify`
+on the dedicated evidence key. The key policy grants that role the same four operations.
 
 The drill writes one uniquely correlated poison canary directly to the isolated source, repeatedly
 returns only that exact message to visibility until the live bounded receive policy is exhausted,
@@ -211,15 +220,19 @@ queues are non-empty, their live identities or policies differ, receive counts d
 an unrelated message appears. The archived receipt contains the receive-count sequence, message
 identifiers and a SHA-256 commitment to the route, not queue ARNs or message bodies.
 It also records the SHA-256 commitment of the exact preflight receipt that authorized the run.
+The paired signed envelope makes later tampering detectable, but GitHub's 30-day artifact retention
+is not immutable external custody. Object-locked storage is the next step where compliance-grade
+retention is required.
 
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
 counts are eventually consistent. No live AWS drill is run in pull-request CI.
 
 ### Opt-in redrive prerequisites
 
-Terraform can provision the two drill queues and its least-privilege runner role without granting
-that role any permission on production traffic. The account-wide GitHub OIDC provider remains an
-explicit input because silently creating or adopting a singleton identity provider is unsafe:
+Terraform can provision the two drill queues, dedicated asymmetric signing key and least-privilege
+runner role without granting that role any permission on production traffic. The account-wide
+GitHub OIDC provider remains an explicit input because silently creating or adopting a singleton
+identity provider is unsafe:
 
 ```hcl
 enable_network_incident_redrive_drill             = true
@@ -231,10 +244,11 @@ network_incident_redrive_github_environment       = "redrive-staging"
 
 The trust policy requires both GitHub's `sts.amazonaws.com` audience and the exact
 `repo:owner/repository:environment:name` subject. The role can exercise only the two dedicated
-queues. Both queues use SQS-managed encryption, TLS-only resource policies, one-hour default
-retention, and a receive threshold constrained to 2–5. The DLQ admits redrive only from its paired
-source. The production ARN is validated in the deployment partition, Region and account, but is
-used only as a distinctness boundary and never appears in the role policy.
+queues and use the signing key only for evidence operations. Both queues use SQS-managed encryption,
+TLS-only resource policies, one-hour default retention, and a receive threshold constrained to 2–5.
+The DLQ admits redrive only from its paired source. The production ARN is validated in the deployment
+partition, Region and account, but is used only as a distinctness boundary and never appears in the
+role policy.
 
 After apply, copy the ready-to-use values into the protected Environment:
 
@@ -267,6 +281,7 @@ scripts/
 ├── build_network_incident_redrive_route.py # non-production redrive boundary builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
 ├── verify_network_incident_redrive_prerequisites.py # live IAM/SQS drift gate
+├── seal_network_incident_redrive_evidence.py # KMS-signed paired evidence envelope
 ├── run_network_incident_delivery_canary.py # isolated live delivery probe
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
@@ -274,6 +289,7 @@ tests/
 ├── test_build_network_incident_redrive_route.py # fault-route boundary tests
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
 ├── test_redrive_canary_workflow.py # redrive workflow security contract
+├── test_seal_network_incident_redrive_evidence.py # evidence binding and KMS contract tests
 ├── test_verify_network_incident_route.py # preflight unit and failure-path tests
 ├── test_run_network_incident_delivery_canary.py # canary isolation and deletion tests
 └── test_run_network_incident_redrive_canary.py # bounded retry and DLQ tests
