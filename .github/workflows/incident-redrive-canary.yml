@@ -30,6 +30,7 @@ jobs:
       NETWORK_INCIDENT_QUEUE_ARN: ${{ vars.NETWORK_INCIDENT_QUEUE_ARN }}
       NETWORK_INCIDENT_FAULT_QUEUE_ARN: ${{ vars.NETWORK_INCIDENT_FAULT_QUEUE_ARN }}
       NETWORK_INCIDENT_FAULT_DLQ_ARN: ${{ vars.NETWORK_INCIDENT_FAULT_DLQ_ARN }}
+      NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN: ${{ vars.NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN }}
 
     steps:
       - name: Check out the reviewed revision
@@ -71,6 +72,7 @@ jobs:
           python scripts/verify_network_incident_redrive_prerequisites.py
           "$RUNNER_TEMP/redrive-route.json"
           --role-arn "$AWS_REDRIVE_CANARY_ROLE_ARN"
+          --evidence-key-arn "$NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN"
           --expected-oidc-subject "$NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT"
           --authorization-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"
           --timeout-seconds 30
@@ -96,12 +98,31 @@ jobs:
             exit "$canary_status"
           fi
 
-      - name: Archive JSON receipt
-        if: ${{ always() && (steps.redrive-preflight.outcome == 'success' || steps.redrive-preflight.outcome == 'failure' || steps.redrive-canary.outcome == 'success' || steps.redrive-canary.outcome == 'failure') }}
+      - name: Sign and verify the paired evidence
+        id: redrive-evidence
+        shell: bash
+        run: |
+          evidence_tmp="$RUNNER_TEMP/redrive-evidence-envelope.json.tmp"
+          trap 'rm -f -- "$evidence_tmp"' EXIT
+          python scripts/seal_network_incident_redrive_evidence.py \
+            "$RUNNER_TEMP/redrive-route.json" \
+            --preflight-receipt "$RUNNER_TEMP/redrive-preflight-receipt.json" \
+            --canary-receipt "$RUNNER_TEMP/redrive-canary-receipt.json" \
+            --authorization-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" \
+            --kms-key-arn "$NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN" \
+            --timeout-seconds 30 \
+            > "$evidence_tmp"
+          mv -- "$evidence_tmp" "$RUNNER_TEMP/redrive-evidence-envelope.json"
+
+      - name: Archive JSON evidence
+        if: ${{ always() && (steps.redrive-preflight.outcome == 'success' || steps.redrive-preflight.outcome == 'failure' || steps.redrive-canary.outcome == 'success' || steps.redrive-canary.outcome == 'failure' || steps.redrive-evidence.outcome == 'success' || steps.redrive-evidence.outcome == 'failure') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: incident-redrive-canary-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/redrive-*-receipt.json
+          path: |
+            ${{ runner.temp }}/redrive-preflight-receipt.json
+            ${{ runner.temp }}/redrive-canary-receipt.json
+            ${{ runner.temp }}/redrive-evidence-envelope.json
           if-no-files-found: error
           retention-days: 30
           overwrite: false

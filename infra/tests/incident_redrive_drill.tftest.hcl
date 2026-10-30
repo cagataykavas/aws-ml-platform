@@ -38,6 +38,8 @@ run "redrive_drill_is_absent_by_default" {
       && length(aws_sqs_queue_policy.network_incident_redrive_fault) == 0
       && length(aws_iam_role.network_incident_redrive_canary) == 0
       && length(aws_iam_role_policy.network_incident_redrive_canary) == 0
+      && length(aws_iam_role_policy.network_incident_redrive_evidence) == 0
+      && length(aws_kms_key.network_incident_redrive_evidence) == 0
       && output.network_incident_redrive_drill == null
     )
     error_message = "The redrive drill must remain completely absent unless explicitly enabled."
@@ -60,6 +62,7 @@ run "redrive_drill_provisions_isolated_encrypted_queues" {
       length(aws_sqs_queue.network_incident_redrive_fault) == 1
       && length(aws_sqs_queue.network_incident_redrive_fault_dlq) == 1
       && length(aws_sqs_queue_policy.network_incident_redrive_fault) == 2
+      && length(aws_kms_key.network_incident_redrive_evidence) == 1
       && aws_sqs_queue.network_incident_redrive_fault[0].name == "ml-platform-network-incidents-fault-injection"
       && aws_sqs_queue.network_incident_redrive_fault_dlq[0].name == "ml-platform-network-incidents-fault-injection-dlq"
       && aws_sqs_queue.network_incident_redrive_fault[0].sqs_managed_sse_enabled
@@ -68,6 +71,15 @@ run "redrive_drill_provisions_isolated_encrypted_queues" {
       && aws_sqs_queue.network_incident_redrive_fault_dlq[0].message_retention_seconds == 3600
     )
     error_message = "Opt-in must create only the short-lived, encrypted fault queue pair."
+  }
+
+  assert {
+    condition = (
+      aws_kms_key.network_incident_redrive_evidence[0].key_usage == "SIGN_VERIFY"
+      && aws_kms_key.network_incident_redrive_evidence[0].customer_master_key_spec == "ECC_NIST_P256"
+      && aws_kms_key.network_incident_redrive_evidence[0].deletion_window_in_days == 30
+    )
+    error_message = "Evidence must use a dedicated P-256 asymmetric signing key."
   }
 
   assert {
@@ -106,6 +118,7 @@ run "redrive_drill_binds_oidc_to_one_environment" {
     condition = (
       length(aws_iam_role.network_incident_redrive_canary) == 1
       && length(aws_iam_role_policy.network_incident_redrive_canary) == 1
+      && length(aws_iam_role_policy.network_incident_redrive_evidence) == 1
       && jsondecode(aws_iam_role.network_incident_redrive_canary[0].assume_role_policy).Statement[0].Principal.Federated == "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
       && jsondecode(aws_iam_role.network_incident_redrive_canary[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
       && jsondecode(aws_iam_role.network_incident_redrive_canary[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:cagataykavas/aws-ml-platform:environment:redrive-staging"
@@ -133,6 +146,19 @@ run "redrive_drill_binds_oidc_to_one_environment" {
       && !strcontains(aws_iam_role_policy.network_incident_redrive_canary[0].policy, "ml-platform-network-incidents-consumer")
     )
     error_message = "The role policy must contain only the drill actions and never the production queue."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_kms_key.network_incident_redrive_evidence[0].policy).Statement[1].Principal.AWS == "arn:aws:iam::123456789012:role/network-incident-redrive-canary"
+      && toset(jsondecode(aws_kms_key.network_incident_redrive_evidence[0].policy).Statement[1].Action) == toset([
+        "kms:DescribeKey",
+        "kms:GetPublicKey",
+        "kms:Sign",
+        "kms:Verify",
+      ])
+    )
+    error_message = "The key policy must grant only evidence operations to the canary role."
   }
 
   assert {

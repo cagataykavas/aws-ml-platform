@@ -206,11 +206,25 @@ queue-route commitment before any SQS call. A canonical SHA-256 commitment to th
 inside the poison message and final receipt, so archived evidence can link one boundary decision to
 one execution without exposing IAM policies or queue ARNs.
 
+After a passing execution, the workflow canonicalizes both receipts and signs a compact commitment
+envelope with a dedicated KMS `ECC_NIST_P256` `SIGN_VERIFY` key. It first checks the key identity,
+state, origin, usage and supported algorithm, then submits the exact canonical claims to KMS and
+requires KMS verification to succeed before publishing the artifact. The envelope binds the
+workflow authorization identifier, route, both receipts, public key and immutable key revision
+without copying queue ARNs, IAM documents or message bodies into the archive.
+The DER SubjectPublicKeyInfo is embedded as canonical base64, with its SHA-256 digest inside the
+signed claims, so a verifier does not need later access to the KMS API.
+
 The receipt commits to the complete route with SHA-256 and records bounded receive evidence without
 including queue ARNs or message bodies. Configure the OIDC role without any production-queue
 permission and scope its SQS calls to the two fault queues. A failed run attempts to delete the last
 known source receipt, but AWS may reject a stale handle; short non-production retention remains a
 required backstop.
+
+The signature detects receipt or envelope tampering after the run; it does not make GitHub artifact
+storage immutable. The configured 30-day archive is operational evidence, not a compliance
+retention system. Export the envelope to independently controlled object-locked storage when that
+property is required.
 
 This drill deterministically emulates a consumer that refuses the poison message. It does not invoke
 the real application consumer, validate Lambda/ECS error handling, prove queue-count freshness, or

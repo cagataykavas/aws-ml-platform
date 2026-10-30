@@ -156,6 +156,50 @@ resource "aws_iam_role" "network_incident_redrive_canary" {
   depends_on = [terraform_data.network_incident_redrive_drill_contract]
 }
 
+resource "aws_kms_key" "network_incident_redrive_evidence" {
+  count = var.enable_network_incident_redrive_drill ? 1 : 0
+
+  description              = "Asymmetric signing key for network incident redrive evidence"
+  key_usage                = "SIGN_VERIFY"
+  customer_master_key_spec = "ECC_NIST_P256"
+  deletion_window_in_days  = 30
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AccountAdministration"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "SignAndVerifyDrillEvidence"
+        Effect = "Allow"
+        Principal = {
+          AWS = local.network_incident_redrive_role_arn
+        }
+        Action = [
+          "kms:DescribeKey",
+          "kms:GetPublicKey",
+          "kms:Sign",
+          "kms:Verify",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+
+  tags = {
+    Workload = "ml-platform"
+    Purpose  = "network-incident-redrive-evidence-signing"
+  }
+
+  depends_on = [aws_iam_role.network_incident_redrive_canary]
+}
+
 resource "aws_iam_role_policy" "network_incident_redrive_canary" {
   count = var.enable_network_incident_redrive_drill ? 1 : 0
 
@@ -198,6 +242,27 @@ resource "aws_iam_role_policy" "network_incident_redrive_canary" {
         Resource = local.network_incident_redrive_role_arn
       },
     ]
+  })
+}
+
+resource "aws_iam_role_policy" "network_incident_redrive_evidence" {
+  count = var.enable_network_incident_redrive_drill ? 1 : 0
+
+  name = "network-incident-redrive-evidence"
+  role = aws_iam_role.network_incident_redrive_canary[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "SignDrillEvidence"
+      Effect = "Allow"
+      Action = [
+        "kms:DescribeKey",
+        "kms:GetPublicKey",
+        "kms:Sign",
+        "kms:Verify",
+      ]
+      Resource = aws_kms_key.network_incident_redrive_evidence[0].arn
+    }]
   })
 }
 
@@ -251,15 +316,17 @@ output "network_incident_redrive_drill" {
     fault_queue_arn             = local.network_incident_redrive_fault_queue_arn
     fault_dead_letter_queue_arn = local.network_incident_redrive_fault_dlq_arn
     redrive_canary_role_arn     = local.network_incident_redrive_role_arn
+    redrive_evidence_key_arn    = aws_kms_key.network_incident_redrive_evidence[0].arn
     github_oidc_subject         = local.network_incident_redrive_oidc_subject
     github_environment_variables = {
-      AWS_REGION                            = var.aws_region
-      AWS_ACCOUNT_ID                        = data.aws_caller_identity.current.account_id
-      AWS_REDRIVE_CANARY_ROLE_ARN           = local.network_incident_redrive_role_arn
-      NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT = local.network_incident_redrive_oidc_subject
-      NETWORK_INCIDENT_QUEUE_ARN            = var.network_incident_redrive_production_queue_arn
-      NETWORK_INCIDENT_FAULT_QUEUE_ARN      = local.network_incident_redrive_fault_queue_arn
-      NETWORK_INCIDENT_FAULT_DLQ_ARN        = local.network_incident_redrive_fault_dlq_arn
+      AWS_REGION                                = var.aws_region
+      AWS_ACCOUNT_ID                            = data.aws_caller_identity.current.account_id
+      AWS_REDRIVE_CANARY_ROLE_ARN               = local.network_incident_redrive_role_arn
+      NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT     = local.network_incident_redrive_oidc_subject
+      NETWORK_INCIDENT_QUEUE_ARN                = var.network_incident_redrive_production_queue_arn
+      NETWORK_INCIDENT_FAULT_QUEUE_ARN          = local.network_incident_redrive_fault_queue_arn
+      NETWORK_INCIDENT_FAULT_DLQ_ARN            = local.network_incident_redrive_fault_dlq_arn
+      NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN = aws_kms_key.network_incident_redrive_evidence[0].arn
     }
   } : null
   description = "Isolated redrive route and protected GitHub Environment values; null when disabled."
