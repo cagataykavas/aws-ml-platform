@@ -31,6 +31,8 @@ jobs:
       NETWORK_INCIDENT_FAULT_QUEUE_ARN: ${{ vars.NETWORK_INCIDENT_FAULT_QUEUE_ARN }}
       NETWORK_INCIDENT_FAULT_DLQ_ARN: ${{ vars.NETWORK_INCIDENT_FAULT_DLQ_ARN }}
       NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN: ${{ vars.NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN }}
+      NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET: ${{ vars.NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET }}
+      NETWORK_INCIDENT_REDRIVE_ARCHIVE_RETENTION_DAYS: ${{ vars.NETWORK_INCIDENT_REDRIVE_ARCHIVE_RETENTION_DAYS }}
 
     steps:
       - name: Check out the reviewed revision
@@ -114,8 +116,23 @@ jobs:
             > "$evidence_tmp"
           mv -- "$evidence_tmp" "$RUNNER_TEMP/redrive-evidence-envelope.json"
 
+      - name: Retain signed evidence in S3 Object Lock
+        id: redrive-retention
+        if: ${{ vars.NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET != '' }}
+        run: >-
+          python scripts/archive_network_incident_redrive_evidence.py
+          "$RUNNER_TEMP/redrive-evidence-envelope.json"
+          --bucket "$NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET"
+          --owner-account-id "$AWS_ACCOUNT_ID"
+          --region "$AWS_REGION"
+          --retention-days "$NETWORK_INCIDENT_REDRIVE_ARCHIVE_RETENTION_DAYS"
+          --workflow-run-id "$GITHUB_RUN_ID"
+          --workflow-run-attempt "$GITHUB_RUN_ATTEMPT"
+          --timeout-seconds 30
+          > "$RUNNER_TEMP/redrive-evidence-retention-receipt.json"
+
       - name: Archive JSON evidence
-        if: ${{ always() && (steps.redrive-preflight.outcome == 'success' || steps.redrive-preflight.outcome == 'failure' || steps.redrive-canary.outcome == 'success' || steps.redrive-canary.outcome == 'failure' || steps.redrive-evidence.outcome == 'success' || steps.redrive-evidence.outcome == 'failure') }}
+        if: ${{ always() && (steps.redrive-preflight.outcome == 'success' || steps.redrive-preflight.outcome == 'failure' || steps.redrive-canary.outcome == 'success' || steps.redrive-canary.outcome == 'failure' || steps.redrive-evidence.outcome == 'success' || steps.redrive-evidence.outcome == 'failure' || steps.redrive-retention.outcome == 'success' || steps.redrive-retention.outcome == 'failure') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: incident-redrive-canary-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -123,6 +140,7 @@ jobs:
             ${{ runner.temp }}/redrive-preflight-receipt.json
             ${{ runner.temp }}/redrive-canary-receipt.json
             ${{ runner.temp }}/redrive-evidence-envelope.json
+            ${{ runner.temp }}/redrive-evidence-retention-receipt.json
           if-no-files-found: error
           retention-days: 30
           overwrite: false

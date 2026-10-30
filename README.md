@@ -186,6 +186,8 @@ Configure these Environment variables:
 - `AWS_REGION`, `AWS_ACCOUNT_ID` and `AWS_REDRIVE_CANARY_ROLE_ARN`;
 - `NETWORK_INCIDENT_REDRIVE_OIDC_SUBJECT`, copied from Terraform to bind the live trust check;
 - `NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN`, the dedicated asymmetric KMS key;
+- optional `NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET` and
+  `NETWORK_INCIDENT_REDRIVE_ARCHIVE_RETENTION_DAYS` values emitted by Terraform;
 - `NETWORK_INCIDENT_QUEUE_ARN`, used only as the production boundary that the drill must not equal;
 - `NETWORK_INCIDENT_FAULT_QUEUE_ARN` and `NETWORK_INCIDENT_FAULT_DLQ_ARN`.
 
@@ -220,9 +222,13 @@ queues are non-empty, their live identities or policies differ, receive counts d
 an unrelated message appears. The archived receipt contains the receive-count sequence, message
 identifiers and a SHA-256 commitment to the route, not queue ARNs or message bodies.
 It also records the SHA-256 commitment of the exact preflight receipt that authorized the run.
-The paired signed envelope makes later tampering detectable, but GitHub's 30-day artifact retention
-is not immutable external custody. Object-locked storage is the next step where compliance-grade
-retention is required.
+When the archive variables are configured, the workflow verifies live bucket versioning, exact
+compliance-mode Object Lock defaults, and all four public-access blocks before uploading. The upload
+uses a content-addressed, run-specific key, SHA-256 checksum, AES-256 server-side encryption and
+`If-None-Match: *`; it then reads retention for the returned object version and fails unless the
+version is compliance-locked for the reviewed period. The published receipt hashes the bucket,
+object key and version identifier rather than exposing them. GitHub's 30-day artifact remains an
+operational copy; S3 is the independently retained custody boundary.
 
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
 counts are eventually consistent. No live AWS drill is run in pull-request CI.
@@ -240,6 +246,9 @@ network_incident_redrive_production_queue_arn     = "arn:aws:sqs:eu-central-1:12
 network_incident_redrive_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
 network_incident_redrive_github_repository        = "cagataykavas/aws-ml-platform"
 network_incident_redrive_github_environment       = "redrive-staging"
+enable_network_incident_redrive_evidence_archive  = true
+network_incident_redrive_evidence_archive_bucket_name = "globally-unique-redrive-evidence-bucket"
+network_incident_redrive_evidence_retention_days  = 30
 ```
 
 The trust policy requires both GitHub's `sts.amazonaws.com` audience and the exact
@@ -248,7 +257,10 @@ queues and use the signing key only for evidence operations. Both queues use SQS
 TLS-only resource policies, one-hour default retention, and a receive threshold constrained to 2–5.
 The DLQ admits redrive only from its paired source. The production ARN is validated in the deployment
 partition, Region and account, but is used only as a distinctness boundary and never appears in the
-role policy.
+role policy. The optional archive creates a private, versioned, AES-256-encrypted S3 bucket with a
+compliance-mode default retention. The workflow role may inspect the bucket contract, append only
+under `redrive-evidence/v1/`, and read that exact version's retention. It receives no delete,
+retention-change, governance-bypass, object-read or bucket-administration permission.
 
 After apply, copy the ready-to-use values into the protected Environment:
 
@@ -282,6 +294,7 @@ scripts/
 ├── verify_network_incident_route.py # read-only deployed-route preflight
 ├── verify_network_incident_redrive_prerequisites.py # live IAM/SQS drift gate
 ├── seal_network_incident_redrive_evidence.py # KMS-signed paired evidence envelope
+├── archive_network_incident_redrive_evidence.py # verified S3 Object Lock custody
 ├── run_network_incident_delivery_canary.py # isolated live delivery probe
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/

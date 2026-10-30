@@ -72,6 +72,21 @@ class RedriveCanaryWorkflowContractTests(unittest.TestCase):
             "redrive-route.json\n            ${{ runner.temp }}", self.workflow
         )
 
+    def test_optionally_retains_signed_evidence_under_object_lock(self) -> None:
+        sealing = self.workflow.index("Sign and verify the paired evidence")
+        retention = self.workflow.index("Retain signed evidence in S3 Object Lock")
+        archive = self.workflow.index("Archive JSON evidence")
+
+        self.assertLess(sealing, retention)
+        self.assertLess(retention, archive)
+        self.assertIn("archive_network_incident_redrive_evidence.py", self.workflow)
+        self.assertIn(
+            "vars.NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET != ''", self.workflow
+        )
+        self.assertIn('--workflow-run-id "$GITHUB_RUN_ID"', self.workflow)
+        self.assertIn('--workflow-run-attempt "$GITHUB_RUN_ATTEMPT"', self.workflow)
+        self.assertIn("redrive-evidence-retention-receipt.json", self.workflow)
+
     def test_uses_only_short_lived_oidc_credentials(self) -> None:
         self.assertIn("permissions: {}", self.workflow)
         self.assertIn("contents: read", self.workflow)

@@ -39,7 +39,10 @@ run "redrive_drill_is_absent_by_default" {
       && length(aws_iam_role.network_incident_redrive_canary) == 0
       && length(aws_iam_role_policy.network_incident_redrive_canary) == 0
       && length(aws_iam_role_policy.network_incident_redrive_evidence) == 0
+      && length(aws_iam_role_policy.network_incident_redrive_archive) == 0
       && length(aws_kms_key.network_incident_redrive_evidence) == 0
+      && length(aws_s3_bucket.network_incident_redrive_evidence_archive) == 0
+      && length(aws_s3_bucket_object_lock_configuration.network_incident_redrive_evidence_archive) == 0
       && output.network_incident_redrive_drill == null
     )
     error_message = "The redrive drill must remain completely absent unless explicitly enabled."
@@ -231,4 +234,74 @@ run "redrive_drill_rejects_unsafe_environment_subject" {
   }
 
   expect_failures = [var.network_incident_redrive_github_environment]
+}
+
+run "redrive_archive_is_compliance_locked_and_least_privilege" {
+  command = plan
+
+  variables {
+    enable_network_incident_redrive_drill                 = true
+    enable_network_incident_redrive_evidence_archive      = true
+    network_incident_redrive_production_queue_arn         = "arn:aws:sqs:eu-central-1:123456789012:ml-platform-network-incidents-consumer"
+    network_incident_redrive_github_oidc_provider_arn     = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+    network_incident_redrive_github_repository            = "cagataykavas/aws-ml-platform"
+    network_incident_redrive_github_environment           = "redrive-staging"
+    network_incident_redrive_evidence_archive_bucket_name = "ml-platform-redrive-evidence-123456789012"
+    network_incident_redrive_evidence_retention_days      = 30
+  }
+
+  assert {
+    condition = (
+      length(aws_s3_bucket.network_incident_redrive_evidence_archive) == 1
+      && aws_s3_bucket.network_incident_redrive_evidence_archive[0].object_lock_enabled
+      && aws_s3_bucket_versioning.network_incident_redrive_evidence_archive[0].versioning_configuration[0].status == "Enabled"
+      && aws_s3_bucket_object_lock_configuration.network_incident_redrive_evidence_archive[0].object_lock_enabled == "Enabled"
+      && aws_s3_bucket_object_lock_configuration.network_incident_redrive_evidence_archive[0].rule[0].default_retention[0].mode == "COMPLIANCE"
+      && aws_s3_bucket_object_lock_configuration.network_incident_redrive_evidence_archive[0].rule[0].default_retention[0].days == 30
+      && aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive[0].block_public_acls
+      && aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive[0].block_public_policy
+      && aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive[0].ignore_public_acls
+      && aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive[0].restrict_public_buckets
+      && one(aws_s3_bucket_server_side_encryption_configuration.network_incident_redrive_evidence_archive[0].rule).apply_server_side_encryption_by_default[0].sse_algorithm == "AES256"
+    )
+    error_message = "The evidence archive must use versioning, compliance Object Lock, full public blocking and encryption."
+  }
+
+  assert {
+    condition = (
+      toset(jsondecode(aws_iam_role_policy.network_incident_redrive_archive[0].policy).Statement[0].Action) == toset([
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketVersioning",
+      ])
+      && jsondecode(aws_iam_role_policy.network_incident_redrive_archive[0].policy).Statement[0].Resource == "arn:aws:s3:::ml-platform-redrive-evidence-123456789012"
+      && toset(jsondecode(aws_iam_role_policy.network_incident_redrive_archive[0].policy).Statement[1].Action) == toset([
+        "s3:GetObjectRetention",
+        "s3:PutObject",
+      ])
+      && jsondecode(aws_iam_role_policy.network_incident_redrive_archive[0].policy).Statement[1].Resource == "arn:aws:s3:::ml-platform-redrive-evidence-123456789012/redrive-evidence/v1/*"
+      && !strcontains(aws_iam_role_policy.network_incident_redrive_archive[0].policy, "s3:DeleteObject")
+      && !strcontains(aws_iam_role_policy.network_incident_redrive_archive[0].policy, "s3:BypassGovernanceRetention")
+      && !strcontains(aws_iam_role_policy.network_incident_redrive_archive[0].policy, "s3:PutObjectRetention")
+    )
+    error_message = "The runner may inspect the bucket, append evidence and verify retention, but cannot weaken or delete it."
+  }
+
+  assert {
+    condition = (
+      output.network_incident_redrive_drill.github_environment_variables.NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET == "ml-platform-redrive-evidence-123456789012"
+      && output.network_incident_redrive_drill.github_environment_variables.NETWORK_INCIDENT_REDRIVE_ARCHIVE_RETENTION_DAYS == "30"
+    )
+    error_message = "The protected Environment output must include the exact archive contract."
+  }
+}
+
+run "redrive_archive_requires_drill_and_bucket" {
+  command = plan
+
+  variables {
+    enable_network_incident_redrive_evidence_archive = true
+  }
+
+  expect_failures = [terraform_data.network_incident_redrive_archive_contract[0]]
 }
