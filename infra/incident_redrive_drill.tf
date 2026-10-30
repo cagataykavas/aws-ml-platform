@@ -20,6 +20,16 @@ locals {
     local.network_incident_redrive_fault_queue_arn,
     local.network_incident_redrive_fault_dlq_arn,
   ]
+  network_incident_redrive_archive_bucket_arn = (
+    var.network_incident_redrive_evidence_archive_bucket_name == null
+    ? "arn:${data.aws_partition.current.partition}:s3:::disabled-redrive-evidence-archive"
+    : "arn:${data.aws_partition.current.partition}:s3:::${var.network_incident_redrive_evidence_archive_bucket_name}"
+  )
+  network_incident_redrive_archive_enabled = (
+    var.enable_network_incident_redrive_evidence_archive
+    && var.enable_network_incident_redrive_drill
+    && var.network_incident_redrive_evidence_archive_bucket_name != null
+  )
 }
 
 resource "terraform_data" "network_incident_redrive_drill_contract" {
@@ -81,6 +91,27 @@ resource "terraform_data" "network_incident_redrive_drill_contract" {
     precondition {
       condition     = var.network_incident_redrive_github_environment != null
       error_message = "The redrive drill requires one explicit protected GitHub Environment."
+    }
+  }
+}
+
+resource "terraform_data" "network_incident_redrive_archive_contract" {
+  count = var.enable_network_incident_redrive_evidence_archive ? 1 : 0
+
+  input = {
+    bucket_name    = var.network_incident_redrive_evidence_archive_bucket_name
+    retention_days = var.network_incident_redrive_evidence_retention_days
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_network_incident_redrive_drill
+      error_message = "The immutable archive requires the isolated redrive drill."
+    }
+
+    precondition {
+      condition     = var.network_incident_redrive_evidence_archive_bucket_name != null
+      error_message = "The immutable archive requires an explicit globally unique S3 bucket name."
     }
   }
 }
@@ -266,6 +297,123 @@ resource "aws_iam_role_policy" "network_incident_redrive_evidence" {
   })
 }
 
+resource "aws_s3_bucket" "network_incident_redrive_evidence_archive" {
+  count = local.network_incident_redrive_archive_enabled ? 1 : 0
+
+  bucket              = var.network_incident_redrive_evidence_archive_bucket_name
+  object_lock_enabled = true
+
+  tags = {
+    Workload = "ml-platform"
+    Purpose  = "network-incident-redrive-immutable-evidence"
+  }
+
+  depends_on = [terraform_data.network_incident_redrive_archive_contract]
+}
+
+resource "aws_s3_bucket_versioning" "network_incident_redrive_evidence_archive" {
+  count = local.network_incident_redrive_archive_enabled ? 1 : 0
+
+  bucket = aws_s3_bucket.network_incident_redrive_evidence_archive[0].id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_object_lock_configuration" "network_incident_redrive_evidence_archive" {
+  count = local.network_incident_redrive_archive_enabled ? 1 : 0
+
+  bucket              = aws_s3_bucket.network_incident_redrive_evidence_archive[0].id
+  object_lock_enabled = "Enabled"
+
+  rule {
+    default_retention {
+      mode = "COMPLIANCE"
+      days = var.network_incident_redrive_evidence_retention_days
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.network_incident_redrive_evidence_archive]
+}
+
+resource "aws_s3_bucket_public_access_block" "network_incident_redrive_evidence_archive" {
+  count = local.network_incident_redrive_archive_enabled ? 1 : 0
+
+  bucket                  = aws_s3_bucket.network_incident_redrive_evidence_archive[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "network_incident_redrive_evidence_archive" {
+  count = local.network_incident_redrive_archive_enabled ? 1 : 0
+
+  bucket = aws_s3_bucket.network_incident_redrive_evidence_archive[0].id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "network_incident_redrive_evidence_archive" {
+  count = local.network_incident_redrive_archive_enabled ? 1 : 0
+
+  bucket = aws_s3_bucket.network_incident_redrive_evidence_archive[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource = [
+        local.network_incident_redrive_archive_bucket_arn,
+        "${local.network_incident_redrive_archive_bucket_arn}/*",
+      ]
+      Condition = {
+        Bool = {
+          "aws:SecureTransport" = "false"
+        }
+      }
+    }]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.network_incident_redrive_evidence_archive]
+}
+
+resource "aws_iam_role_policy" "network_incident_redrive_archive" {
+  count = local.network_incident_redrive_archive_enabled ? 1 : 0
+
+  name = "network-incident-redrive-archive"
+  role = aws_iam_role.network_incident_redrive_canary[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "InspectImmutableArchive"
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketObjectLockConfiguration",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:GetBucketVersioning",
+        ]
+        Resource = local.network_incident_redrive_archive_bucket_arn
+      },
+      {
+        Sid    = "WriteAndVerifyImmutableEvidence"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObjectRetention",
+          "s3:PutObject",
+        ]
+        Resource = "${local.network_incident_redrive_archive_bucket_arn}/redrive-evidence/v1/*"
+      },
+    ]
+  })
+}
+
 resource "aws_sqs_queue_policy" "network_incident_redrive_fault" {
   count = var.enable_network_incident_redrive_drill ? 2 : 0
 
@@ -327,6 +475,16 @@ output "network_incident_redrive_drill" {
       NETWORK_INCIDENT_FAULT_QUEUE_ARN          = local.network_incident_redrive_fault_queue_arn
       NETWORK_INCIDENT_FAULT_DLQ_ARN            = local.network_incident_redrive_fault_dlq_arn
       NETWORK_INCIDENT_REDRIVE_EVIDENCE_KEY_ARN = aws_kms_key.network_incident_redrive_evidence[0].arn
+      NETWORK_INCIDENT_REDRIVE_ARCHIVE_BUCKET = (
+        local.network_incident_redrive_archive_enabled
+        ? aws_s3_bucket.network_incident_redrive_evidence_archive[0].bucket
+        : null
+      )
+      NETWORK_INCIDENT_REDRIVE_ARCHIVE_RETENTION_DAYS = (
+        local.network_incident_redrive_archive_enabled
+        ? tostring(var.network_incident_redrive_evidence_retention_days)
+        : null
+      )
     }
   } : null
   description = "Isolated redrive route and protected GitHub Environment values; null when disabled."

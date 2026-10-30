@@ -335,6 +335,48 @@ variable "network_incident_redrive_role_name" {
   }
 }
 
+variable "enable_network_incident_redrive_evidence_archive" {
+  type        = bool
+  default     = false
+  description = "Create a private S3 Object Lock bucket for immutable signed redrive evidence."
+}
+
+variable "network_incident_redrive_evidence_archive_bucket_name" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Globally unique S3 bucket name used only by the optional immutable evidence archive."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_evidence_archive_bucket_name == null
+      || (
+        length(var.network_incident_redrive_evidence_archive_bucket_name) >= 3
+        && length(var.network_incident_redrive_evidence_archive_bucket_name) <= 63
+        && can(regex("^[a-z0-9][a-z0-9.-]*[a-z0-9]$", var.network_incident_redrive_evidence_archive_bucket_name))
+        && !can(regex("[.][.]|[-][.]|[.][-]", var.network_incident_redrive_evidence_archive_bucket_name))
+        && !can(regex("^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$", var.network_incident_redrive_evidence_archive_bucket_name))
+      )
+    )
+    error_message = "network_incident_redrive_evidence_archive_bucket_name must be null or a canonical 3-63 character S3 bucket name."
+  }
+}
+
+variable "network_incident_redrive_evidence_retention_days" {
+  type        = number
+  default     = 30
+  description = "Compliance-mode Object Lock retention applied by default to every evidence version."
+
+  validation {
+    condition = (
+      var.network_incident_redrive_evidence_retention_days >= 7
+      && var.network_incident_redrive_evidence_retention_days <= 365
+      && floor(var.network_incident_redrive_evidence_retention_days) == var.network_incident_redrive_evidence_retention_days
+    )
+    error_message = "network_incident_redrive_evidence_retention_days must be an integer from 7 to 365."
+  }
+}
+
 variable "enable_vpc_flow_contributor_insights" {
   type        = bool
   default     = false

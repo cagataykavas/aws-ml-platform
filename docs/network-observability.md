@@ -221,10 +221,12 @@ permission and scope its SQS calls to the two fault queues. A failed run attempt
 known source receipt, but AWS may reject a stale handle; short non-production retention remains a
 required backstop.
 
-The signature detects receipt or envelope tampering after the run; it does not make GitHub artifact
-storage immutable. The configured 30-day archive is operational evidence, not a compliance
-retention system. Export the envelope to independently controlled object-locked storage when that
-property is required.
+The signature detects receipt or envelope tampering after the run. When Terraform's optional
+evidence archive is enabled, the workflow also validates the live bucket's versioning,
+compliance-mode Object Lock default and public-access block, writes the canonical envelope with an
+explicit SHA-256 checksum and collision guard, then verifies retention on the returned version.
+The short receipt contains only commitments to the bucket, object key, version and evidence. The
+GitHub artifact remains a 30-day operational copy rather than the immutable custody boundary.
 
 This drill deterministically emulates a consumer that refuses the poison message. It does not invoke
 the real application consumer, validate Lambda/ECS error handling, prove queue-count freshness, or
