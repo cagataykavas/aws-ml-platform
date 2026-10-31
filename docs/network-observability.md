@@ -228,6 +228,17 @@ explicit SHA-256 checksum and collision guard, then verifies retention on the re
 The short receipt contains only commitments to the bucket, object key, version and evidence. The
 GitHub artifact remains a 30-day operational copy rather than the immutable custody boundary.
 
+Recovery validation is intentionally separated from the append-only writer. A read-only auditor
+can pass the exact bucket, content-addressed key and version plus that short receipt to
+`verify_retained_redrive_evidence.py`. The verifier requests the exact S3 version with checksum
+mode enabled, independently recomputes the canonical envelope digest, verifies its embedded
+P-256/SHA-256 signature with OpenSSL, and compares both GetObject metadata and
+GetObjectRetention with the original compliance-lock deadline. The auditor needs only
+`s3:GetObjectVersion` and `s3:GetObjectRetention` on the evidence prefix; the workflow writer
+continues to have no object-read permission. The resulting JSON carries hashes of the storage
+coordinates rather than the bucket, key or version ID. Pull-request tests use fake S3 responses
+plus a local ephemeral P-256 key and do not claim that a live recovery drill has run.
+
 This drill deterministically emulates a consumer that refuses the poison message. It does not invoke
 the real application consumer, validate Lambda/ECS error handling, prove queue-count freshness, or
 exercise production traffic. Pull-request CI uses fake AWS responses and makes no live AWS claim.
