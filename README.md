@@ -252,6 +252,25 @@ compliance lock at least as long as the original receipt; and OpenSSL validates 
 P-256/SHA-256 signature over the canonical claims. Its audit receipt retains only hashes of the
 S3 coordinates. The repository deliberately does not add object-read permission to the writer.
 
+For a real recovery drill, dispatch `retained-evidence-live-audit` against a protected
+non-production GitHub Environment. Set `AWS_REGION`, `AWS_ACCOUNT_ID`,
+`AWS_RETAINED_EVIDENCE_AUDITOR_ROLE_ARN`, and the explicit opt-in
+`RETAINED_EVIDENCE_AUDIT_ENABLED=true` as Environment variables. Store the exact bucket, object
+key, version ID, and complete retention-receipt JSON in Environment secrets named
+`RETAINED_EVIDENCE_BUCKET`, `RETAINED_EVIDENCE_OBJECT_KEY`, `RETAINED_EVIDENCE_VERSION_ID`, and
+`RETAINED_EVIDENCE_RECEIPT`. The role trust policy must bind GitHub's audience and the exact
+`repo:cagataykavas/aws-ml-platform:environment:ENVIRONMENT` subject.
+
+The workflow requests a 15-minute OIDC session and intersects the role policy with an inline
+session policy granting only `s3:GetObjectVersion` and `s3:GetObjectRetention` on the supplied
+exact object ARN. Before reading S3, it calls STS and requires the active account, assumed-role
+name, and run-bound session name to match the reviewed boundary. Only the privacy-reduced audit
+receipt is uploaded; target coordinates and the source retention receipt are removed from the
+runner. The Environment should require reviewers and restrict deployment branches. Pull-request
+CI validates this workflow contract but never requests an OIDC token or contacts AWS. The live job
+also refuses dispatches from anything other than the repository's default branch, and private
+coordinates are scoped only to the steps that validate or consume them.
+
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
 counts are eventually consistent. No live AWS drill is run in pull-request CI.
 
@@ -318,6 +337,7 @@ scripts/
 ├── seal_network_incident_redrive_evidence.py # KMS-signed paired evidence envelope
 ├── archive_network_incident_redrive_evidence.py # verified S3 Object Lock custody
 ├── verify_retained_redrive_evidence.py # read-only exact-version retention audit
+├── run_retained_evidence_live_audit.py # OIDC caller attestation and live recovery audit
 ├── run_network_incident_delivery_canary.py # isolated live delivery probe
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
@@ -327,6 +347,7 @@ tests/
 ├── test_redrive_canary_workflow.py # redrive workflow security contract
 ├── test_seal_network_incident_redrive_evidence.py # evidence binding and KMS contract tests
 ├── test_verify_retained_redrive_evidence.py # offline signature and exact-version audit tests
+├── test_run_retained_evidence_live_audit.py # OIDC caller and workflow contract tests
 ├── test_verify_network_incident_route.py # preflight unit and failure-path tests
 ├── test_run_network_incident_delivery_canary.py # canary isolation and deletion tests
 └── test_run_network_incident_redrive_canary.py # bounded retry and DLQ tests
@@ -337,3 +358,4 @@ tests/
 The wider portfolio uses this validated infrastructure layer as the AWS analogue for an ML platform involving S3, ECR, ECS/EKS, SageMaker, RDS/DynamoDB, ElastiCache, Glue/Athena, SQS/SNS/EventBridge/Kinesis and CloudWatch. Those services are architectural mappings unless code exists in this repository; the bullets above are the concrete Terraform implemented here.
 
 The repository contains no employer data, credentials or proprietary infrastructure.
+

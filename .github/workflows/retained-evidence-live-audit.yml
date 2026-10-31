@@ -1,0 +1,114 @@
+name: retained-evidence-live-audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Protected non-production Environment containing the auditor boundary
+        type: environment
+        required: true
+
+permissions: {}
+
+jobs:
+  retained-evidence-audit:
+    name: OIDC retained-evidence recovery audit
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: retained-evidence-audit-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_RETAINED_EVIDENCE_AUDITOR_ROLE_ARN: ${{ vars.AWS_RETAINED_EVIDENCE_AUDITOR_ROLE_ARN }}
+      RETAINED_EVIDENCE_AUDIT_ENABLED: ${{ vars.RETAINED_EVIDENCE_AUDIT_ENABLED }}
+      AUDITOR_SESSION_NAME: retained-audit-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate protected audit configuration
+        shell: bash
+        env:
+          RETAINED_EVIDENCE_BUCKET: ${{ secrets.RETAINED_EVIDENCE_BUCKET }}
+          RETAINED_EVIDENCE_OBJECT_KEY: ${{ secrets.RETAINED_EVIDENCE_OBJECT_KEY }}
+          RETAINED_EVIDENCE_VERSION_ID: ${{ secrets.RETAINED_EVIDENCE_VERSION_ID }}
+          RETAINED_EVIDENCE_RECEIPT: ${{ secrets.RETAINED_EVIDENCE_RECEIPT }}
+        run: |
+          set -euo pipefail
+          if [[ "$RETAINED_EVIDENCE_AUDIT_ENABLED" != "true" ]]; then
+            echo "Protected Environment must explicitly enable the retained-evidence audit." >&2
+            exit 2
+          fi
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_RETAINED_EVIDENCE_AUDITOR_ROLE_ARN RETAINED_EVIDENCE_BUCKET RETAINED_EVIDENCE_OBJECT_KEY RETAINED_EVIDENCE_VERSION_ID RETAINED_EVIDENCE_RECEIPT; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Protected Environment value is missing: $name" >&2
+              exit 2
+            fi
+          done
+          printf '%s' "$RETAINED_EVIDENCE_RECEIPT" > "$RUNNER_TEMP/retention-receipt.json"
+
+      - name: Exchange GitHub OIDC token for exact-object read credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_RETAINED_EVIDENCE_AUDITOR_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 900
+          role-session-name: retained-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          retry-max-attempts: 3
+          action-timeout-s: 60
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          translate-env-variables: false
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObjectVersion","s3:GetObjectRetention"],"Resource":"arn:aws:s3:::${{ secrets.RETAINED_EVIDENCE_BUCKET }}/${{ secrets.RETAINED_EVIDENCE_OBJECT_KEY }}"}]}
+
+      - name: Attest caller and audit the immutable version
+        env:
+          RETAINED_EVIDENCE_BUCKET: ${{ secrets.RETAINED_EVIDENCE_BUCKET }}
+          RETAINED_EVIDENCE_OBJECT_KEY: ${{ secrets.RETAINED_EVIDENCE_OBJECT_KEY }}
+          RETAINED_EVIDENCE_VERSION_ID: ${{ secrets.RETAINED_EVIDENCE_VERSION_ID }}
+        run: >-
+          python scripts/run_retained_evidence_live_audit.py
+          "$RUNNER_TEMP/retention-receipt.json"
+          --auditor-role-arn "$AWS_RETAINED_EVIDENCE_AUDITOR_ROLE_ARN"
+          --session-name "$AUDITOR_SESSION_NAME"
+          --bucket "$RETAINED_EVIDENCE_BUCKET"
+          --key "$RETAINED_EVIDENCE_OBJECT_KEY"
+          --version-id "$RETAINED_EVIDENCE_VERSION_ID"
+          --owner-account-id "$AWS_ACCOUNT_ID"
+          --region "$AWS_REGION"
+          --timeout-seconds 30
+          > "$RUNNER_TEMP/retained-evidence-audit-receipt.json"
+
+      - name: Archive privacy-reduced audit receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: retained-evidence-audit-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/retained-evidence-audit-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Remove private audit inputs
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/retention-receipt.json"
+
