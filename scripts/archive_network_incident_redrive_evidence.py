@@ -65,6 +65,11 @@ def _load_envelope(path: str | Path) -> dict[str, object]:
         )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("cannot read redrive evidence envelope") from exc
+    return _validate_envelope(value)
+
+
+def _validate_envelope(value: object) -> dict[str, object]:
+    """Validate an already-decoded signed envelope without weakening JSON parsing."""
     if not isinstance(value, dict) or set(value) != ENVELOPE_FIELDS:
         raise ValueError(
             "redrive evidence envelope fields do not match the archive schema"

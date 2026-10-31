@@ -230,6 +230,28 @@ version is compliance-locked for the reviewed period. The published receipt hash
 object key and version identifier rather than exposing them. GitHub's 30-day artifact remains an
 operational copy; S3 is the independently retained custody boundary.
 
+An auditor can later verify the exact immutable version without KMS access or the append-only
+writer role. Supply the private target coordinates from the controlled S3 inventory or incident
+record together with the privacy-reduced retention receipt:
+
+```bash
+python scripts/verify_retained_redrive_evidence.py \
+  redrive-evidence-retention-receipt.json \
+  --bucket "$ARCHIVE_BUCKET" \
+  --key "$ARCHIVE_OBJECT_KEY" \
+  --version-id "$ARCHIVE_VERSION_ID" \
+  --owner-account-id "$AWS_ACCOUNT_ID" \
+  --region "$AWS_REGION"
+```
+
+Run this command under a separate read-only identity with `s3:GetObjectVersion` and
+`s3:GetObjectRetention` on `redrive-evidence/v1/*`. It fails closed unless the receipt binds the
+exact bucket, content-addressed key and version; S3 returns the expected checksum, version,
+content type and AES-256 encryption; both object metadata and the current retention API report a
+compliance lock at least as long as the original receipt; and OpenSSL validates the embedded
+P-256/SHA-256 signature over the canonical claims. Its audit receipt retains only hashes of the
+S3 coordinates. The repository deliberately does not add object-read permission to the writer.
+
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
 counts are eventually consistent. No live AWS drill is run in pull-request CI.
 
@@ -295,6 +317,7 @@ scripts/
 ├── verify_network_incident_redrive_prerequisites.py # live IAM/SQS drift gate
 ├── seal_network_incident_redrive_evidence.py # KMS-signed paired evidence envelope
 ├── archive_network_incident_redrive_evidence.py # verified S3 Object Lock custody
+├── verify_retained_redrive_evidence.py # read-only exact-version retention audit
 ├── run_network_incident_delivery_canary.py # isolated live delivery probe
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
@@ -303,6 +326,7 @@ tests/
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
 ├── test_redrive_canary_workflow.py # redrive workflow security contract
 ├── test_seal_network_incident_redrive_evidence.py # evidence binding and KMS contract tests
+├── test_verify_retained_redrive_evidence.py # offline signature and exact-version audit tests
 ├── test_verify_network_incident_route.py # preflight unit and failure-path tests
 ├── test_run_network_incident_delivery_canary.py # canary isolation and deletion tests
 └── test_run_network_incident_redrive_canary.py # bounded retry and DLQ tests
