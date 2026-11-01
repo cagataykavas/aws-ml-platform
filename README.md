@@ -271,6 +271,37 @@ CI validates this workflow contract but never requests an OIDC token or contacts
 also refuses dispatches from anything other than the repository's default branch, and private
 coordinates are scoped only to the steps that validate or consume them.
 
+Terraform can now provision the independent AWS auditor identity consumed by that workflow. It is
+absent by default and requires the immutable archive, the account-local GitHub OIDC provider, the
+exact repository, and one protected Environment:
+
+```hcl
+enable_retained_evidence_auditor_role              = true
+retained_evidence_auditor_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+retained_evidence_auditor_github_repository        = "cagataykavas/aws-ml-platform"
+retained_evidence_auditor_github_environment       = "retained-evidence-audit-staging"
+```
+
+The role trust requires GitHub's `sts.amazonaws.com` audience and the exact
+`repo:owner/repository:environment:name` subject. Its base policy can only call
+`s3:GetObjectVersion` and `s3:GetObjectRetention` under `redrive-evidence/v1/` in the managed
+archive. It cannot list the bucket, write or delete objects, change retention, bypass governance,
+or use the writer's signing key. The workflow further intersects those permissions with its
+exact-object session policy, so a reviewed run receives access to only the supplied key.
+
+After apply, copy the non-secret values into the protected Environment:
+
+```bash
+terraform -chdir=infra output -json retained_evidence_auditor \
+  | jq '.github_environment_variables'
+```
+
+The exact bucket, key, version ID, and signed archive receipt remain Environment secrets. Terraform
+does not create GitHub Environment reviewers, branch restrictions, secrets, or the account-wide
+OIDC provider; those independent control-plane settings must be configured before a live audit.
+Pull-request CI validates the plan contract with a mocked provider and does not claim a live AWS
+assumption or S3 read.
+
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
 counts are eventually consistent. No live AWS drill is run in pull-request CI.
 
@@ -327,6 +358,7 @@ infra/
 ├── observability.tf  # VPC Flow Logs, metrics, alarms and contributor rules
 ├── incident_route.tf # optional encrypted topic, governed queue and dead-letter route
 ├── incident_redrive_drill.tf # opt-in isolated queues and Environment-scoped OIDC role
+├── retained_evidence_auditor.tf # opt-in read-only recovery-auditor OIDC role
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
