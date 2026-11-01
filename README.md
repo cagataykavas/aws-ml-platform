@@ -305,6 +305,51 @@ assumption or S3 read.
 This is an explicit failure-consumer drill, not a production-consumer test. SQS approximate queue
 counts are eventually consistent. No live AWS drill is run in pull-request CI.
 
+## Terraform plan-risk admission
+
+`scripts/audit_terraform_plan.py` adds a credential-free admission boundary between planning and
+apply. It consumes private `terraform show -json` output plus a reviewed policy, accepts only the
+[documented Terraform 1.x action vectors](https://developer.hashicorp.com/terraform/internals/json-format),
+and rejects errored or incomplete plans. Create, update, and data-source read actions have explicit
+budgets. Deletes, both replacement orders, and resource address moves require exact one-shot
+approvals; stale approvals fail just like missing approvals. Deposed objects always require
+separate operator investigation.
+
+```bash
+terraform -chdir=infra plan -out=tfplan
+terraform -chdir=infra show -json tfplan > tfplan.private.json
+python scripts/audit_terraform_plan.py \
+  tfplan.private.json reviewed-plan-policy.json \
+  --output plan-audit.json
+```
+
+The policy schema is intentionally small:
+
+```json
+{
+  "schema_version": "terraform-plan-policy/v1",
+  "max_creates": 10,
+  "max_updates": 10,
+  "max_reads": 20,
+  "approved_destructive_changes": [],
+  "approved_moves": []
+}
+```
+
+Each destructive approval records the exact `address`, ordered `actions`, and `action_reason` from
+the plan. Each move records the exact `previous_address` and `address`. Wildcards are unsupported.
+The output contains only action counts, reviewed addresses, reasons, findings, Terraform versions,
+and SHA-256 commitments to the input plan and policy; it never copies variables or before/after
+values.
+
+Terraform plan JSON can contain cleartext sensitive values even when the CLI marks them sensitive,
+as [HashiCorp's plan guidance warns](https://developer.hashicorp.com/terraform/tutorials/cli/plan).
+Keep both the binary and JSON plan out of version control and short-lived CI artifacts, run the
+guard on the same protected runner that created the plan, retain only the audit report, and apply
+the exact saved binary whose JSON digest was reviewed. This guard limits change shape; it does not
+prove provider behavior, policy correctness, or that the subsequently applied binary matches the
+audited JSON unless the surrounding deployment workflow binds those artifacts.
+
 ### Opt-in redrive prerequisites
 
 Terraform can provision the two drill queues, dedicated asymmetric signing key and least-privilege
@@ -362,6 +407,7 @@ infra/
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
+├── audit_terraform_plan.py # private-plan action budget and exact destructive approval gate
 ├── build_network_incident_canary_route.py # fail-closed Environment route builder
 ├── build_network_incident_redrive_route.py # non-production redrive boundary builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
@@ -373,6 +419,7 @@ scripts/
 ├── run_network_incident_delivery_canary.py # isolated live delivery probe
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
+├── test_audit_terraform_plan.py # plan parsing, privacy and admission-policy tests
 ├── test_build_network_incident_canary_route.py # environment route-boundary tests
 ├── test_build_network_incident_redrive_route.py # fault-route boundary tests
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
