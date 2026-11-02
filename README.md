@@ -382,6 +382,37 @@ least-privilege short-lived deployment identity, and a reviewer-gated Environmen
 does not currently define those account-specific controls, so it intentionally does not ship a
 workflow that could imply local ephemeral state is safe for deployment.
 
+### Remote-state backend admission
+
+`scripts/audit_terraform_backend.py` validates the backend metadata written by the actual
+`terraform init`, rather than trusting the requested flags alone. Run it in the same protected job
+immediately after initialization and before planning:
+
+```bash
+python scripts/audit_terraform_backend.py .terraform/terraform.tfstate \
+  --expected-partition "aws" \
+  --expected-account-id "$AWS_ACCOUNT_ID" \
+  --expected-region "$AWS_REGION" \
+  --expected-bucket "$TERRAFORM_STATE_BUCKET" \
+  --expected-key "aws-ml-platform/staging/terraform.tfstate" \
+  --expected-kms-key-arn "$TERRAFORM_STATE_KMS_KEY_ARN" \
+  --output backend-audit.json
+```
+
+The auditor requires Terraform 1.10 or newer, an exact S3 backend identity, native S3 lockfiles,
+encryption with a KMS key in the deployment partition, account, and Region, and the already assumed
+workload identity. It rejects local
+backend substitution, legacy DynamoDB-only locking, static credentials, profiles, secondary role
+assumption, web-identity token files, custom endpoints, validation bypasses, non-private ACLs,
+unsafe state keys, symlinked metadata, duplicate JSON fields, and metadata schema drift. The
+retained report commits to the private initialized metadata and hashes the bucket, state key, and
+KMS key ARN instead of publishing them.
+
+This is a local admission receipt, not proof that the S3 bucket, KMS key, IAM policy, or lockfile
+operation is healthy. The metadata can be forged outside a protected workflow. A live deployment
+must still query the account-owned bucket and key policy, prove lock acquisition, verify the active
+OIDC caller, and preserve the receipt with protected approval evidence.
+
 ### Opt-in redrive prerequisites
 
 Terraform can provision the two drill queues, dedicated asymmetric signing key and least-privilege
