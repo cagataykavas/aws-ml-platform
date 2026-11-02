@@ -77,12 +77,21 @@ def _load_json(
         raw = path.read_bytes()
         if not 1 <= len(raw) <= max_bytes:
             raise PlanAuditError(f"{label} size changed outside the allowed range")
+    except OSError as exc:
+        raise PlanAuditError(f"cannot read {label}") from exc
+    return _load_json_bytes(raw, max_bytes=max_bytes, label=label), raw
+
+
+def _load_json_bytes(raw: bytes, *, max_bytes: int, label: str) -> dict[str, Any]:
+    if not 1 <= len(raw) <= max_bytes:
+        raise PlanAuditError(f"{label} size is outside the allowed range")
+    try:
         document = json.loads(raw, object_pairs_hook=_unique_object)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PlanAuditError(f"{label} is not valid JSON") from exc
     if not isinstance(document, dict):
         raise PlanAuditError(f"{label} must be a JSON object")
-    return document, raw
+    return document
 
 
 def _bounded_integer(value: object, field: str) -> int:
@@ -322,6 +331,30 @@ def audit_plan(
     }
 
 
+def audit_payloads(raw_plan: bytes, raw_policy: bytes) -> dict[str, Any]:
+    """Audit private in-memory payloads and return only privacy-reduced evidence."""
+
+    plan = _load_json_bytes(raw_plan, max_bytes=MAX_PLAN_BYTES, label="plan")
+    policy_document = _load_json_bytes(
+        raw_policy, max_bytes=MAX_POLICY_BYTES, label="policy"
+    )
+    report = audit_plan(
+        plan,
+        _parse_policy(policy_document),
+        hashlib.sha256(raw_plan).hexdigest(),
+    )
+    report["policy_sha256"] = hashlib.sha256(raw_policy).hexdigest()
+    return report
+
+
+def audit_files(plan_path: Path, policy_path: Path) -> dict[str, Any]:
+    """Audit bounded files without exposing their private values."""
+
+    _, raw_plan = _load_json(plan_path, max_bytes=MAX_PLAN_BYTES, label="plan")
+    _, raw_policy = _load_json(policy_path, max_bytes=MAX_POLICY_BYTES, label="policy")
+    return audit_payloads(raw_plan, raw_policy)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Audit private `terraform show -json` output without echoing plan values."
@@ -336,16 +369,7 @@ def main() -> int:
             args.policy.resolve(),
         }:
             raise PlanAuditError("output must not replace the private plan or policy")
-        plan, raw_plan = _load_json(args.plan, max_bytes=MAX_PLAN_BYTES, label="plan")
-        policy_document, raw_policy = _load_json(
-            args.policy, max_bytes=MAX_POLICY_BYTES, label="policy"
-        )
-        report = audit_plan(
-            plan,
-            _parse_policy(policy_document),
-            hashlib.sha256(raw_plan).hexdigest(),
-        )
-        report["policy_sha256"] = hashlib.sha256(raw_policy).hexdigest()
+        report = audit_files(args.plan, args.policy)
         payload = json.dumps(report, allow_nan=False, indent=2, sort_keys=True) + "\n"
         if args.output is None:
             print(payload, end="")
