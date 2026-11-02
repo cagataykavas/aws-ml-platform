@@ -350,6 +350,38 @@ the exact saved binary whose JSON digest was reviewed. This guard limits change 
 prove provider behavior, policy correctness, or that the subsequently applied binary matches the
 audited JSON unless the surrounding deployment workflow binds those artifacts.
 
+### Immutable pre-apply rebinding
+
+`scripts/apply_bound_terraform_plan.py` closes that last local handoff without uploading a plan
+binary or JSON document. A planning phase retains only the accepted audit report and its two input
+digests. After a protected Environment approval, the deployment job creates a fresh saved plan and
+passes it to the wrapper with the approved commit, plan, and policy commitments:
+
+```bash
+python scripts/apply_bound_terraform_plan.py \
+  "$RUNNER_TEMP/tfplan" reviewed-plan-policy.json reviewed-plan-audit.json \
+  --expected-plan-sha256 "$APPROVED_PLAN_SHA256" \
+  --expected-policy-sha256 "$APPROVED_POLICY_SHA256" \
+  --expected-commit-sha "$APPROVED_COMMIT_SHA" \
+  --actual-commit-sha "$GITHUB_SHA" \
+  --working-directory infra \
+  --output apply-binding-receipt.json
+```
+
+The wrapper copies the saved binary into a Linux anonymous memory file, seals it against writes,
+growth, and truncation, then asks Terraform to render JSON from that sealed descriptor. It reruns
+the complete action-policy audit, requires byte-exact plan/policy digests and an exact report match,
+and invokes `terraform apply` against the same sealed descriptor. Only after a successful apply
+does it emit a receipt committing to the checked-out revision, private plan binary, reviewed JSON,
+policy, audit document, and Terraform executable. The receipt contains none of the plan values or
+resource addresses.
+
+This is an execution binding, not a deployment system. It requires Linux `memfd` and `/proc`, a
+trusted Terraform executable, a separately configured remote backend with state locking, a
+least-privilege short-lived deployment identity, and a reviewer-gated Environment. This repository
+does not currently define those account-specific controls, so it intentionally does not ship a
+workflow that could imply local ephemeral state is safe for deployment.
+
 ### Opt-in redrive prerequisites
 
 Terraform can provision the two drill queues, dedicated asymmetric signing key and least-privilege
@@ -437,4 +469,5 @@ tests/
 The wider portfolio uses this validated infrastructure layer as the AWS analogue for an ML platform involving S3, ECR, ECS/EKS, SageMaker, RDS/DynamoDB, ElastiCache, Glue/Athena, SQS/SNS/EventBridge/Kinesis and CloudWatch. Those services are architectural mappings unless code exists in this repository; the bullets above are the concrete Terraform implemented here.
 
 The repository contains no employer data, credentials or proprietary infrastructure.
+
 
