@@ -441,6 +441,40 @@ the intended permissions. Run it inside the same reviewer-gated short-lived OIDC
 `terraform init`; a separately isolated canary remains necessary before claiming lock acquisition
 and release-to-apply readiness.
 
+The lock canary closes that specific gap without touching the real state object or Terraform's
+`<state-key>.tflock` object:
+
+```bash
+python scripts/probe_terraform_backend_lock.py \
+  backend-audit.json live-backend-audit.json \
+  --partition "aws" \
+  --account-id "$AWS_ACCOUNT_ID" \
+  --region "$AWS_REGION" \
+  --bucket "$TERRAFORM_STATE_BUCKET" \
+  --state-key "aws-ml-platform/staging/terraform.tfstate" \
+  --kms-key-arn "$TERRAFORM_STATE_KMS_KEY_ARN" \
+  --role-arn "$TERRAFORM_DEPLOY_ROLE_ARN" \
+  --session-name "terraform-lock-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --authorization-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --output backend-lock-canary.json
+```
+
+It revalidates both earlier receipts before any write, requires the role session to be bound to the
+run and attempt, and derives a content-addressed key below `<state-key>.lock-canary/`. The probe
+uploads one private canonical payload with `If-None-Match: *`, the exact KMS key, bucket-key
+encryption, expected owner, and SHA-256 checksum. A second identical conditional write must fail
+with `PreconditionFailed`, proving exclusion while the first object exists. Cleanup runs in a
+`finally` block and deletes only the exact version returned by the successful acquisition; a
+cleanup failure is surfaced as an operator-inspection incident rather than a passing receipt.
+
+The runner needs narrowly scoped `s3:PutObject` and `s3:DeleteObjectVersion` access only to the
+`.lock-canary/*` namespace in addition to the read permissions used by the live audit. Do not grant
+the canary permission to the real state key or `.tflock` object. The receipt hashes the bucket,
+state key, canary key, object version, ETag, KMS key, role, session, and authorization identifier.
+Pull-request tests use an AWS CLI stand-in and do not claim a live account run, Environment
+approval, effective IAM proof, or Terraform-provider execution. Run it only in an isolated,
+reviewer-gated non-production session after the two admission audits and before planning.
+
 ### Opt-in redrive prerequisites
 
 Terraform can provision the two drill queues, dedicated asymmetric signing key and least-privilege
