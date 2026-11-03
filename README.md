@@ -413,6 +413,34 @@ operation is healthy. The metadata can be forged outside a protected workflow. A
 must still query the account-owned bucket and key policy, prove lock acquisition, verify the active
 OIDC caller, and preserve the receipt with protected approval evidence.
 
+The companion read-only live audit binds those local findings to the active AWS control plane:
+
+```bash
+python scripts/audit_live_terraform_backend.py backend-audit.json \
+  --partition "aws" \
+  --account-id "$AWS_ACCOUNT_ID" \
+  --region "$AWS_REGION" \
+  --bucket "$TERRAFORM_STATE_BUCKET" \
+  --kms-key-arn "$TERRAFORM_STATE_KMS_KEY_ARN" \
+  --role-arn "$TERRAFORM_DEPLOY_ROLE_ARN" \
+  --session-name "$TERRAFORM_DEPLOY_SESSION_NAME" \
+  --output live-backend-audit.json
+```
+
+It first validates the complete local receipt and exact target commitments, then attests the active
+STS account, assumed-role name, and session before reading S3 or KMS. The auditor requires the exact
+bucket Region and owner, enabled versioning, one exact KMS default-encryption rule with bucket keys,
+all four public-access blocks, `BucketOwnerEnforced`, a non-public bucket-policy status, and an
+enabled single-Region customer-managed symmetric KMS key with automatic rotation no less frequent
+than annually. The output contains hashes of private identities and a commitment to the complete
+control-plane snapshot, not bucket, key, role, session, or KMS identifiers.
+
+This remains a read-only readiness check. It does not parse the full bucket or KMS key policy,
+prove Terraform provider behavior, acquire the native lockfile, or establish that the role has only
+the intended permissions. Run it inside the same reviewer-gated short-lived OIDC session as
+`terraform init`; a separately isolated canary remains necessary before claiming lock acquisition
+and release-to-apply readiness.
+
 ### Opt-in redrive prerequisites
 
 Terraform can provision the two drill queues, dedicated asymmetric signing key and least-privilege
