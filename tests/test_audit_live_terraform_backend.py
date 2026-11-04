@@ -24,11 +24,14 @@ KMS_KEY = f"arn:aws:kms:{REGION}:{ACCOUNT}:key/12345678-1234-4234-8234-123456789
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/deploy/terraform-staging"
 SESSION = "terraform-audit-41573170992-1"
 ASSUMED_ROLE = f"arn:aws:sts::{ACCOUNT}:assumed-role/terraform-staging/{SESSION}"
+BACKEND_OBSERVED_AT = "2026-11-04T04:00:00Z"
+LIVE_OBSERVED_AT = "2026-11-04T04:03:00Z"
 
 
 def backend_receipt(**overrides: object) -> dict[str, object]:
     document: dict[str, object] = {
-        "schema_version": "terraform-backend-audit/v1",
+        "schema_version": "terraform-backend-audit/v2",
+        "observed_at": BACKEND_OBSERVED_AT,
         "accepted": True,
         "backend_type": "s3",
         "partition": PARTITION,
@@ -130,6 +133,7 @@ def run_audit(
         kms_key_arn=KMS_KEY,
         role_arn=ROLE_ARN,
         session_name=SESSION,
+        observed_at=LIVE_OBSERVED_AT,
     )
 
 
@@ -183,6 +187,15 @@ class LiveTerraformBackendAuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(LiveBackendAuditError, "receipt"):
                     run_audit(aws, receipt)
                 self.assertEqual(aws.calls, [])
+
+    def test_rejects_backend_observation_after_live_audit(self) -> None:
+        aws = FakeAws()
+        receipt = backend_receipt(observed_at="2026-11-04T04:03:01Z")
+
+        with self.assertRaisesRegex(LiveBackendAuditError, "precedes"):
+            run_audit(aws, receipt)
+
+        self.assertEqual(aws.calls, [])
 
     def test_rejects_wrong_active_role_before_control_plane_reads(self) -> None:
         values = responses()

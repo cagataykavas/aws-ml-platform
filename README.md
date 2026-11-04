@@ -404,7 +404,8 @@ encryption with a KMS key in the deployment partition, account, and Region, and 
 workload identity. It rejects local
 backend substitution, legacy DynamoDB-only locking, static credentials, profiles, secondary role
 assumption, web-identity token files, custom endpoints, validation bypasses, non-private ACLs,
-unsafe state keys, symlinked metadata, duplicate JSON fields, and metadata schema drift. The
+unsafe state keys, symlinked metadata, duplicate JSON fields, and metadata schema drift. It records
+a canonical UTC observation time from the runner clock. The
 retained report commits to the private initialized metadata and hashes the bucket, state key, and
 KMS key ARN instead of publishing them.
 
@@ -433,7 +434,8 @@ bucket Region and owner, enabled versioning, one exact KMS default-encryption ru
 all four public-access blocks, `BucketOwnerEnforced`, a non-public bucket-policy status, and an
 enabled single-Region customer-managed symmetric KMS key with automatic rotation no less frequent
 than annually. The output contains hashes of private identities and a commitment to the complete
-control-plane snapshot, not bucket, key, role, session, or KMS identifiers.
+control-plane snapshot, not bucket, key, role, session, or KMS identifiers. Its independently
+recorded observation time must not precede the metadata audit.
 
 This remains a read-only readiness check. It does not parse the full bucket or KMS key policy,
 prove Terraform provider behavior, acquire the native lockfile, or establish that the role has only
@@ -469,7 +471,9 @@ cleanup failure is surfaced as an operator-inspection incident rather than a pas
 
 The runner needs narrowly scoped `s3:PutObject` and `s3:DeleteObjectVersion` access only to the
 `.lock-canary/*` namespace in addition to the read permissions used by the live audit. Do not grant
-the canary permission to the real state key or `.tflock` object. The receipt hashes the bucket,
+the canary permission to the real state key or `.tflock` object. The canonical canary payload binds
+the metadata, live-audit, and canary observation times in addition to both prior evidence digests.
+The receipt hashes the bucket,
 state key, canary key, object version, ETag, KMS key, role, session, and authorization identifier.
 Pull-request tests use an AWS CLI stand-in and do not claim a live account run, Environment
 approval, effective IAM proof, or Terraform-provider execution. Run it only in an isolated,
@@ -496,15 +500,18 @@ python scripts/verify_terraform_backend_admission.py \
 The verifier revalidates the complete local metadata audit, live S3/KMS control audit, and lock
 canary rather than trusting their `accepted` flags. It binds all three to the same backend,
 assumed-role session, and run-attempt authorization; reconstructs the content-addressed canary key
-and payload; and requires conditional acquisition, contention rejection, and exact-version cleanup.
+and payload; requires conditional acquisition, contention rejection, and exact-version cleanup;
+then requires the metadata, live audit, canary, and release decision to be monotonically ordered
+inside one 15-minute window. Legacy v1 receipts are rejected instead of silently upgraded.
 The output is a self-digested release-to-plan receipt containing only hashes and control outcomes,
 not the account, region, bucket, state key, KMS key, role, session, object version, or ETag.
 
 This receipt is an admission decision over supplied evidence. It does not call AWS, establish
-freshness or trusted time, verify effective IAM or Environment approval, execute Terraform, or
-prevent a privileged operator from supplying old but internally consistent receipts. Run all three
-producers and this verifier in one reviewer-gated short-lived OIDC job, keep the raw receipts under
-restricted retention, and enforce workflow provenance separately.
+trusted time, verify effective IAM or Environment approval, execute Terraform, or prevent a
+privileged operator from rewriting self-digested receipts and their times. The freshness control is
+meaningful only when all three producers and the verifier run on one protected runner with an
+authenticated clock. Keep raw receipts under restricted retention and enforce workflow provenance
+separately; a signed short-lived admission lease is the next trust-boundary increment.
 
 ### Opt-in redrive prerequisites
 

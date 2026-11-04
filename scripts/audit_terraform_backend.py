@@ -11,10 +11,11 @@ import re
 import stat
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-BACKEND_AUDIT_SCHEMA = "terraform-backend-audit/v1"
+BACKEND_AUDIT_SCHEMA = "terraform-backend-audit/v2"
 MAX_METADATA_BYTES = 1024 * 1024
 
 _ACCOUNT_ID = re.compile(r"[0-9]{12}")
@@ -57,6 +58,7 @@ _BYPASS_FIELDS = (
     "skip_requesting_account_id",
     "skip_s3_checksum",
 )
+_UTC_TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
 class BackendAuditError(ValueError):
@@ -131,6 +133,25 @@ def _digest_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _observed_at(value: str) -> str:
+    if _UTC_TIMESTAMP.fullmatch(value) is None:
+        raise BackendAuditError("observation time must be canonical UTC")
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise BackendAuditError("observation time is invalid") from exc
+    return value
+
+
+def _now_utc() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def _required_text(value: object, pattern: re.Pattern[str], field: str) -> str:
     if not isinstance(value, str) or pattern.fullmatch(value) is None:
         raise BackendAuditError(f"{field} is invalid")
@@ -169,6 +190,7 @@ def audit_backend_metadata(
     expected_bucket: str,
     expected_key: str,
     expected_kms_key_arn: str,
+    observed_at: str | None = None,
 ) -> dict[str, Any]:
     """Require an encrypted, locked S3 backend using ambient workload credentials."""
 
@@ -244,6 +266,7 @@ def audit_backend_metadata(
 
     evidence = {
         "schema_version": BACKEND_AUDIT_SCHEMA,
+        "observed_at": _observed_at(observed_at or _now_utc()),
         "accepted": True,
         "backend_type": "s3",
         "partition": expected_partition,

@@ -143,7 +143,15 @@ class TerraformBackendAuditTests(unittest.TestCase):
 
         self.assertEqual(first_result.returncode, 0)
         self.assertEqual(second_result.returncode, 0)
-        self.assertEqual(first, second)
+        first_document = json.loads(first)
+        second_document = json.loads(second)
+        for document in (first_document, second_document):
+            self.assertRegex(
+                document.pop("observed_at"),
+                r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+            )
+            document.pop("evidence_sha256")
+        self.assertEqual(first_document, second_document)
         self.assertNotIn(BUCKET, first)
         self.assertNotIn(KEY, first)
 

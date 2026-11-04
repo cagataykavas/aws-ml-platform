@@ -27,6 +27,9 @@ AUTHORIZATION = "41666644513-2"
 SESSION = f"terraform-lock-{AUTHORIZATION}"
 VERSION_ID = "3HL4kqtJlcpXroDTDmJ+3dcLwW4xJb8v"
 ETAG = '"d41d8cd98f00b204e9800998ecf8427e"'
+BACKEND_OBSERVED_AT = "2026-11-04T04:00:00Z"
+LIVE_OBSERVED_AT = "2026-11-04T04:03:00Z"
+CANARY_OBSERVED_AT = "2026-11-04T04:06:00Z"
 
 
 def digest(value: str) -> str:
@@ -35,7 +38,8 @@ def digest(value: str) -> str:
 
 def backend_receipt(**overrides: object) -> dict[str, object]:
     document: dict[str, object] = {
-        "schema_version": "terraform-backend-audit/v1",
+        "schema_version": "terraform-backend-audit/v2",
+        "observed_at": BACKEND_OBSERVED_AT,
         "accepted": True,
         "backend_type": "s3",
         "partition": PARTITION,
@@ -61,7 +65,8 @@ def live_receipt(
 ) -> dict[str, object]:
     backend = backend or backend_receipt()
     document: dict[str, object] = {
-        "schema_version": "terraform-live-backend-audit/v1",
+        "schema_version": "terraform-live-backend-audit/v2",
+        "observed_at": LIVE_OBSERVED_AT,
         "accepted": True,
         "partition": PARTITION,
         "account_id": ACCOUNT,
@@ -147,6 +152,7 @@ def run_probe(
         "role_arn": ROLE_ARN,
         "session_name": SESSION,
         "authorization_id": AUTHORIZATION,
+        "observed_at": CANARY_OBSERVED_AT,
     }
     parameters.update(overrides)
     return probe_backend_lock(store, backend, live, **parameters)
@@ -213,6 +219,16 @@ class TerraformBackendLockCanaryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     run_probe(store, **overrides)
                 self.assertEqual(store.calls, [])
+
+    def test_rejects_out_of_order_observations_before_writes(self) -> None:
+        backend = backend_receipt()
+        live = live_receipt(backend, observed_at="2026-11-04T04:06:01Z")
+        store = FakeStore()
+
+        with self.assertRaisesRegex(BackendLockCanaryError, "precedes"):
+            run_probe(store, backend, live)
+
+        self.assertEqual(store.calls, [])
 
     def test_unsafe_acquisition_response_still_cleans_exact_version(self) -> None:
         store = FakeStore()
