@@ -15,14 +15,24 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.audit_terraform_backend import BACKEND_AUDIT_SCHEMA, _write_atomic
+    from scripts.audit_terraform_backend import (
+        BACKEND_AUDIT_SCHEMA,
+        _now_utc,
+        _observed_at,
+        _write_atomic,
+    )
     from scripts.verify_network_incident_route import AwsCli, AwsClient
 except ModuleNotFoundError:  # Direct execution from the scripts directory.
-    from audit_terraform_backend import BACKEND_AUDIT_SCHEMA, _write_atomic
+    from audit_terraform_backend import (
+        BACKEND_AUDIT_SCHEMA,
+        _now_utc,
+        _observed_at,
+        _write_atomic,
+    )
     from verify_network_incident_route import AwsCli, AwsClient
 
 
-LIVE_BACKEND_AUDIT_SCHEMA = "terraform-live-backend-audit/v1"
+LIVE_BACKEND_AUDIT_SCHEMA = "terraform-live-backend-audit/v2"
 MAX_RECEIPT_BYTES = 64 * 1024
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -41,6 +51,7 @@ _KMS_KEY_ARN = re.compile(
 )
 _BACKEND_RECEIPT_FIELDS = {
     "schema_version",
+    "observed_at",
     "accepted",
     "backend_type",
     "partition",
@@ -141,6 +152,7 @@ def _load_receipt(path: Path) -> dict[str, Any]:
 class BackendAuditReceipt:
     evidence_sha256: str
     key_sha256: str
+    observed_at: str
 
     @classmethod
     def validate_and_bind(
@@ -194,7 +206,15 @@ class BackendAuditReceipt:
             raise LiveBackendAuditError(
                 "backend receipt contains an invalid commitment"
             )
-        return cls(evidence_sha256=evidence_sha256, key_sha256=document["key_sha256"])
+        try:
+            observed_at = _observed_at(document.get("observed_at"))
+        except (ValueError, TypeError) as exc:
+            raise LiveBackendAuditError("backend receipt observation time is invalid") from exc
+        return cls(
+            evidence_sha256=evidence_sha256,
+            key_sha256=document["key_sha256"],
+            observed_at=observed_at,
+        )
 
 
 def _validated_boundary(
@@ -273,6 +293,7 @@ def audit_live_backend(
     kms_key_arn: str,
     role_arn: str,
     session_name: str,
+    observed_at: str | None = None,
 ) -> dict[str, object]:
     """Verify caller, live bucket controls, and live KMS controls without writes."""
 
@@ -293,6 +314,14 @@ def audit_live_backend(
         bucket=bucket,
         kms_key_arn=kms_key_arn,
     )
+    try:
+        current_observed_at = _observed_at(observed_at or _now_utc())
+    except (ValueError, TypeError) as exc:
+        raise LiveBackendAuditError("live audit observation time is invalid") from exc
+    if current_observed_at < receipt.observed_at:
+        raise LiveBackendAuditError(
+            "live audit observation precedes the backend metadata audit"
+        )
     responses: dict[str, dict[str, Any]] = {}
     responses["caller"] = _call(aws, "sts", "get-caller-identity")
     if (
@@ -400,6 +429,7 @@ def audit_live_backend(
 
     evidence: dict[str, object] = {
         "schema_version": LIVE_BACKEND_AUDIT_SCHEMA,
+        "observed_at": current_observed_at,
         "accepted": True,
         "partition": partition,
         "account_id": account_id,

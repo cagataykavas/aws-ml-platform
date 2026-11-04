@@ -19,8 +19,11 @@ from scripts.verify_terraform_backend_admission import (
 from tests.test_probe_terraform_backend_lock import (
     ACCOUNT,
     AUTHORIZATION,
+    BACKEND_OBSERVED_AT,
     BUCKET,
+    CANARY_OBSERVED_AT,
     KMS_KEY,
+    LIVE_OBSERVED_AT,
     PARTITION,
     REGION,
     ROLE_ARN,
@@ -31,6 +34,8 @@ from tests.test_probe_terraform_backend_lock import (
     live_receipt,
     run_probe,
 )
+
+VERIFICATION_TIME = "2026-11-04T04:07:00Z"
 
 
 def _chain():
@@ -52,6 +57,7 @@ def _verify(backend=None, live=None, canary=None, **overrides: str):
         "role_arn": ROLE_ARN,
         "session_name": SESSION,
         "authorization_id": AUTHORIZATION,
+        "verification_time": VERIFICATION_TIME,
     }
     parameters.update(overrides)
     return verify_backend_admission(
@@ -174,6 +180,8 @@ class TerraformBackendAdmissionTests(unittest.TestCase):
                 "backend_audit_sha256",
                 "live_backend_audit_sha256",
                 "lock_canary_sha256",
+                "evidence_window_sha256",
+                "evidence_freshness_verified",
                 "backend_configuration_verified",
                 "live_controls_verified",
                 "conditional_lock_verified",
@@ -181,6 +189,38 @@ class TerraformBackendAdmissionTests(unittest.TestCase):
                 "evidence_sha256",
             },
         )
+
+    def test_rejects_stale_or_out_of_order_evidence_windows(self) -> None:
+        backend, live, canary = _chain()
+        stale_time = "2026-11-04T04:15:01Z"
+        with self.assertRaisesRegex(BackendAdmissionError, "15-minute"):
+            _verify(backend, live, canary, verification_time=stale_time)
+
+        reordered_live = _resign(
+            {**live, "observed_at": "2026-11-04T03:59:59Z"}
+        )
+        with self.assertRaises(ValueError):
+            _verify(backend, reordered_live, canary)
+
+        with self.assertRaisesRegex(BackendAdmissionError, "out of order"):
+            _verify(
+                backend,
+                live,
+                canary,
+                verification_time="2026-11-04T04:05:59Z",
+            )
+
+    def test_binds_exact_observation_window_into_canary_and_admission(self) -> None:
+        backend, live, canary = _chain()
+        self.assertEqual(backend["observed_at"], BACKEND_OBSERVED_AT)
+        self.assertEqual(live["observed_at"], LIVE_OBSERVED_AT)
+        self.assertEqual(canary["observed_at"], CANARY_OBSERVED_AT)
+
+        changed = _resign(
+            {**canary, "observed_at": "2026-11-04T04:06:01Z"}
+        )
+        with self.assertRaisesRegex(BackendAdmissionError, "another run"):
+            _verify(backend, live, changed)
 
 
 class TerraformBackendAdmissionCliTests(unittest.TestCase):
@@ -218,7 +258,13 @@ class TerraformBackendAdmissionCliTests(unittest.TestCase):
                 "--output",
                 str(output),
             ]
-            with patch("sys.argv", arguments):
+            with (
+                patch("sys.argv", arguments),
+                patch(
+                    "scripts.verify_terraform_backend_admission._now_utc",
+                    return_value=VERIFICATION_TIME,
+                ),
+            ):
                 self.assertEqual(main(), 0)
 
             document = json.loads(output.read_text(encoding="utf-8"))
@@ -226,7 +272,13 @@ class TerraformBackendAdmissionCliTests(unittest.TestCase):
             self.assertEqual(os.stat(output).st_mode & 0o777, 0o600)
 
             arguments[-1] = str(paths[0])
-            with patch("sys.argv", arguments):
+            with (
+                patch("sys.argv", arguments),
+                patch(
+                    "scripts.verify_terraform_backend_admission._now_utc",
+                    return_value=VERIFICATION_TIME,
+                ),
+            ):
                 self.assertEqual(main(), 2)
 
 

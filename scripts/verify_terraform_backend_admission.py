@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ try:
         _sha256,
         _validated_boundary,
     )
-    from scripts.audit_terraform_backend import _write_atomic
+    from scripts.audit_terraform_backend import _now_utc, _observed_at, _write_atomic
     from scripts.probe_terraform_backend_lock import (
         LOCK_CANARY_PAYLOAD_SCHEMA,
         LOCK_CANARY_SCHEMA,
@@ -35,7 +36,7 @@ except ModuleNotFoundError:  # Direct execution from the scripts directory.
         _sha256,
         _validated_boundary,
     )
-    from audit_terraform_backend import _write_atomic
+    from audit_terraform_backend import _now_utc, _observed_at, _write_atomic
     from probe_terraform_backend_lock import (
         LOCK_CANARY_PAYLOAD_SCHEMA,
         LOCK_CANARY_SCHEMA,
@@ -45,11 +46,15 @@ except ModuleNotFoundError:  # Direct execution from the scripts directory.
     )
 
 
-BACKEND_ADMISSION_SCHEMA = "terraform-backend-admission/v1"
+BACKEND_ADMISSION_SCHEMA = "terraform-backend-admission/v2"
+MAX_EVIDENCE_AGE_SECONDS = 15 * 60
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _CANARY_FIELDS = {
     "schema_version",
+    "observed_at",
+    "backend_observed_at",
+    "live_observed_at",
     "accepted",
     "partition",
     "account_id",
@@ -117,7 +122,9 @@ def _validate_canary(
     role_arn: str,
     session_name: str,
     authorization_id: str,
-) -> str:
+    backend_observed_at: str,
+    live_observed_at: str,
+) -> tuple[str, str]:
     if set(document) != _CANARY_FIELDS:
         raise BackendAdmissionError(
             "lock canary receipt fields do not match the schema"
@@ -130,6 +137,9 @@ def _validate_canary(
             "authorization_sha256": authorization_sha256,
             "backend_audit_sha256": backend_audit_sha256,
             "live_backend_audit_sha256": live_backend_audit_sha256,
+            "backend_observed_at": backend_observed_at,
+            "live_observed_at": live_observed_at,
+            "observed_at": document.get("observed_at"),
             "canary_key_sha256": _sha256(canary_key),
         }
     )
@@ -151,6 +161,8 @@ def _validate_canary(
         or document.get("authorization_sha256") != authorization_sha256
         or document.get("backend_audit_sha256") != backend_audit_sha256
         or document.get("live_backend_audit_sha256") != live_backend_audit_sha256
+        or document.get("backend_observed_at") != backend_observed_at
+        or document.get("live_observed_at") != live_observed_at
         or document.get("canary_key_sha256") != _sha256(canary_key)
         or document.get("payload_sha256") != hashlib.sha256(payload).hexdigest()
         or any(document.get(check) is not True for check in _CANARY_CHECKS)
@@ -164,7 +176,54 @@ def _validate_canary(
         raise BackendAdmissionError(
             "lock canary receipt is invalid or targets another run"
         )
-    return expected_evidence_sha256
+    try:
+        observed_at = _observed_at(document.get("observed_at"))
+    except (ValueError, TypeError) as exc:
+        raise BackendAdmissionError("lock canary observation time is invalid") from exc
+    return expected_evidence_sha256, observed_at
+
+
+def _utc_datetime(value: str) -> datetime:
+    return datetime.strptime(_observed_at(value), "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+
+
+def _validate_evidence_window(
+    *,
+    backend_observed_at: str,
+    live_observed_at: str,
+    canary_observed_at: str,
+    verification_time: str,
+) -> str:
+    try:
+        timestamps = tuple(
+            _utc_datetime(value)
+            for value in (
+                backend_observed_at,
+                live_observed_at,
+                canary_observed_at,
+                verification_time,
+            )
+        )
+    except (ValueError, TypeError) as exc:
+        raise BackendAdmissionError("backend evidence time is invalid") from exc
+    if timestamps != tuple(sorted(timestamps)):
+        raise BackendAdmissionError("backend evidence observations are out of order")
+    age_seconds = int((timestamps[-1] - timestamps[0]).total_seconds())
+    if age_seconds > MAX_EVIDENCE_AGE_SECONDS:
+        raise BackendAdmissionError("backend evidence exceeds the 15-minute window")
+    return hashlib.sha256(
+        _canonical(
+            {
+                "backend_observed_at": backend_observed_at,
+                "live_observed_at": live_observed_at,
+                "canary_observed_at": canary_observed_at,
+                "verification_time": verification_time,
+                "max_evidence_age_seconds": MAX_EVIDENCE_AGE_SECONDS,
+            }
+        )
+    ).hexdigest()
 
 
 def verify_backend_admission(
@@ -181,6 +240,7 @@ def verify_backend_admission(
     role_arn: str,
     session_name: str,
     authorization_id: str,
+    verification_time: str | None = None,
 ) -> dict[str, object]:
     """Require one exact local/live/canary evidence chain before planning."""
 
@@ -218,7 +278,7 @@ def verify_backend_admission(
         role_name=role_name,
         session_name=session_name,
     )
-    canary_evidence_sha256 = _validate_canary(
+    canary_evidence_sha256, canary_observed_at = _validate_canary(
         canary_receipt_document,
         backend_audit_sha256=backend_receipt.evidence_sha256,
         live_backend_audit_sha256=live_receipt.evidence_sha256,
@@ -231,6 +291,18 @@ def verify_backend_admission(
         role_arn=role_arn,
         session_name=session_name,
         authorization_id=authorization_id,
+        backend_observed_at=backend_receipt.observed_at,
+        live_observed_at=live_receipt.observed_at,
+    )
+    try:
+        verified_at = _observed_at(verification_time or _now_utc())
+    except (ValueError, TypeError) as exc:
+        raise BackendAdmissionError("verification time is invalid") from exc
+    evidence_window_sha256 = _validate_evidence_window(
+        backend_observed_at=backend_receipt.observed_at,
+        live_observed_at=live_receipt.observed_at,
+        canary_observed_at=canary_observed_at,
+        verification_time=verified_at,
     )
     boundary_sha256 = hashlib.sha256(
         _canonical(
@@ -256,6 +328,8 @@ def verify_backend_admission(
         "backend_audit_sha256": backend_receipt.evidence_sha256,
         "live_backend_audit_sha256": live_receipt.evidence_sha256,
         "lock_canary_sha256": canary_evidence_sha256,
+        "evidence_window_sha256": evidence_window_sha256,
+        "evidence_freshness_verified": True,
         "backend_configuration_verified": True,
         "live_controls_verified": True,
         "conditional_lock_verified": True,

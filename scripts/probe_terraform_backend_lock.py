@@ -26,7 +26,7 @@ try:
         _sha256,
         _validated_boundary,
     )
-    from scripts.audit_terraform_backend import _write_atomic
+    from scripts.audit_terraform_backend import _now_utc, _observed_at, _write_atomic
 except ModuleNotFoundError:  # Direct execution from the scripts directory.
     from audit_live_terraform_backend import (
         LIVE_BACKEND_AUDIT_SCHEMA,
@@ -37,11 +37,11 @@ except ModuleNotFoundError:  # Direct execution from the scripts directory.
         _sha256,
         _validated_boundary,
     )
-    from audit_terraform_backend import _write_atomic
+    from audit_terraform_backend import _now_utc, _observed_at, _write_atomic
 
 
-LOCK_CANARY_SCHEMA = "terraform-backend-lock-canary/v1"
-LOCK_CANARY_PAYLOAD_SCHEMA = "terraform-backend-lock-canary-payload/v1"
+LOCK_CANARY_SCHEMA = "terraform-backend-lock-canary/v2"
+LOCK_CANARY_PAYLOAD_SCHEMA = "terraform-backend-lock-canary-payload/v2"
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _AUTHORIZATION = re.compile(r"[1-9][0-9]{0,19}-[1-9][0-9]{0,4}")
@@ -50,6 +50,7 @@ _ETAG = re.compile(r'"[A-Za-z0-9+/=_-]{1,256}"')
 _AWS_ERROR = re.compile(r"An error occurred \(([^)]+)\) when calling")
 _LIVE_RECEIPT_FIELDS = {
     "schema_version",
+    "observed_at",
     "accepted",
     "partition",
     "account_id",
@@ -298,6 +299,7 @@ class AwsCliLockStore:
 @dataclass(frozen=True)
 class LiveAuditReceipt:
     evidence_sha256: str
+    observed_at: str
 
     @classmethod
     def validate_and_bind(
@@ -351,7 +353,13 @@ class LiveAuditReceipt:
             raise BackendLockCanaryError(
                 "live audit receipt is invalid or targets another run"
             )
-        return cls(evidence_sha256=expected_digest)
+        try:
+            observed_at = _observed_at(document.get("observed_at"))
+        except (ValueError, TypeError) as exc:
+            raise BackendLockCanaryError(
+                "live audit receipt observation time is invalid"
+            ) from exc
+        return cls(evidence_sha256=expected_digest, observed_at=observed_at)
 
 
 def _state_key(value: object) -> str:
@@ -427,6 +435,7 @@ def probe_backend_lock(
     role_arn: str,
     session_name: str,
     authorization_id: str,
+    observed_at: str | None = None,
 ) -> dict[str, object]:
     """Acquire an isolated lock, prove contention, and delete its exact version."""
 
@@ -464,6 +473,20 @@ def probe_backend_lock(
         role_name=role_name,
         session_name=session_name,
     )
+    try:
+        current_observed_at = _observed_at(observed_at or _now_utc())
+    except (ValueError, TypeError) as exc:
+        raise BackendLockCanaryError(
+            "lock canary observation time is invalid"
+        ) from exc
+    if live_receipt.observed_at < backend_receipt.observed_at:
+        raise BackendLockCanaryError(
+            "live audit observation precedes the backend metadata audit"
+        )
+    if current_observed_at < live_receipt.observed_at:
+        raise BackendLockCanaryError(
+            "lock canary observation precedes the live backend audit"
+        )
     authorization_sha256 = _sha256(authorization_id)
     canary_key = f"{state_key}.lock-canary/{authorization_sha256}.tflock"
     if len(canary_key.encode("utf-8")) > 1_024 or canary_key == f"{state_key}.tflock":
@@ -476,6 +499,9 @@ def probe_backend_lock(
             "authorization_sha256": authorization_sha256,
             "backend_audit_sha256": backend_receipt.evidence_sha256,
             "live_backend_audit_sha256": live_receipt.evidence_sha256,
+            "backend_observed_at": backend_receipt.observed_at,
+            "live_observed_at": live_receipt.observed_at,
+            "observed_at": current_observed_at,
             "canary_key_sha256": _sha256(canary_key),
         }
     )
@@ -566,6 +592,9 @@ def probe_backend_lock(
     version_id = created_versions[0]
     evidence: dict[str, object] = {
         "schema_version": LOCK_CANARY_SCHEMA,
+        "observed_at": current_observed_at,
+        "backend_observed_at": backend_receipt.observed_at,
+        "live_observed_at": live_receipt.observed_at,
         "accepted": True,
         "partition": partition,
         "account_id": account_id,
