@@ -475,6 +475,37 @@ Pull-request tests use an AWS CLI stand-in and do not claim a live account run, 
 approval, effective IAM proof, or Terraform-provider execution. Run it only in an isolated,
 reviewer-gated non-production session after the two admission audits and before planning.
 
+After those three controls succeed, cross-bind their receipts before releasing the workflow to
+`terraform plan`:
+
+```bash
+python scripts/verify_terraform_backend_admission.py \
+  backend-audit.json live-backend-audit.json backend-lock-canary.json \
+  --partition "aws" \
+  --account-id "$AWS_ACCOUNT_ID" \
+  --region "$AWS_REGION" \
+  --bucket "$TERRAFORM_STATE_BUCKET" \
+  --state-key "aws-ml-platform/staging/terraform.tfstate" \
+  --kms-key-arn "$TERRAFORM_STATE_KMS_KEY_ARN" \
+  --role-arn "$TERRAFORM_DEPLOY_ROLE_ARN" \
+  --session-name "terraform-lock-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --authorization-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --output backend-admission.json
+```
+
+The verifier revalidates the complete local metadata audit, live S3/KMS control audit, and lock
+canary rather than trusting their `accepted` flags. It binds all three to the same backend,
+assumed-role session, and run-attempt authorization; reconstructs the content-addressed canary key
+and payload; and requires conditional acquisition, contention rejection, and exact-version cleanup.
+The output is a self-digested release-to-plan receipt containing only hashes and control outcomes,
+not the account, region, bucket, state key, KMS key, role, session, object version, or ETag.
+
+This receipt is an admission decision over supplied evidence. It does not call AWS, establish
+freshness or trusted time, verify effective IAM or Environment approval, execute Terraform, or
+prevent a privileged operator from supplying old but internally consistent receipts. Run all three
+producers and this verifier in one reviewer-gated short-lived OIDC job, keep the raw receipts under
+restricted retention, and enforce workflow provenance separately.
+
 ### Opt-in redrive prerequisites
 
 Terraform can provision the two drill queues, dedicated asymmetric signing key and least-privilege
