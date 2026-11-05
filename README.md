@@ -554,10 +554,34 @@ python scripts/lease_terraform_backend_admission.py verify \
 Verification fails closed for an unpinned key, changed provenance or admission receipt, unknown
 fields, a not-yet-valid or expired lease, an overlong lifetime, or an invalid P-256/SHA-256
 signature. The successful audit is the release-to-plan signal; keep both source receipts private.
+For a one-shot production handoff, use `consume` instead of `verify` and provide an existing
+mode-`0700` directory on protected runner storage:
+
+```bash
+python scripts/lease_terraform_backend_admission.py consume \
+  backend-admission-lease.json backend-admission.json \
+  --kms-key-arn "$TERRAFORM_ADMISSION_SIGNING_KEY_ARN" \
+  --public-key-sha256 "$TERRAFORM_ADMISSION_PUBLIC_KEY_SHA256" \
+  --authorization-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --workflow-subject "repo:cagataykavas/aws-ml-platform:environment:terraform-staging" \
+  --workflow-sha "$GITHUB_SHA" \
+  --consumption-directory "$RUNNER_TEMP/backend-admission-consumed" \
+  --output backend-admission-lease-consumption.json
+```
+
+The command verifies every lease control before atomically creating a mode-`0600`,
+content-addressed consumption marker with `O_EXCL`. Concurrent or later reuse of the same valid
+lease fails closed. The marker contains only lease/admission/verification commitments and bounded
+times, not AWS, Environment, authorization, or workflow identifiers. A crash after marker creation
+intentionally requires a new lease rather than risking duplicate plan authorization.
+
 This utility does not provision the signing key, trust the runner clock, inspect the GitHub OIDC
 token itself, prove Environment approval, or call Terraform. The workflow must obtain its subject
 from the validated OIDC identity, pin the key out of band, restrict `kms:Sign` to the protected job,
-and keep issuance and plan verification inside one authenticated-clock boundary.
+and keep issuance and plan verification inside one authenticated-clock boundary. Protected runner
+storage is still a local replay boundary: a privileged host can delete consumption markers, so
+retain the privacy-reduced consumption receipt independently when stronger replay evidence is
+required.
 
 ### Opt-in redrive prerequisites
 
@@ -630,7 +654,7 @@ scripts/
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
 ├── test_audit_terraform_plan.py # plan parsing, privacy and admission-policy tests
-├── test_lease_terraform_backend_admission.py # lease expiry, provenance and key-pin tests
+├── test_lease_terraform_backend_admission.py # lease expiry, provenance, replay and key-pin tests
 ├── test_build_network_incident_canary_route.py # environment route-boundary tests
 ├── test_build_network_incident_redrive_route.py # fault-route boundary tests
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract

@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ from scripts.lease_terraform_backend_admission import (
     BackendAdmissionLeaseError,
     KmsLeaseKey,
     main,
+    verify_and_consume_lease,
     verify_lease,
 )
 from tests.test_probe_terraform_backend_lock import (
@@ -128,6 +130,25 @@ def verify(envelope: object, **overrides: object) -> dict[str, object]:
     return verify_lease(envelope, admission_document(), **parameters)
 
 
+def consume(
+    envelope: object, directory: Path, **overrides: object
+) -> dict[str, object]:
+    parameters = {
+        "key_arn": SIGNING_KEY_ARN,
+        "expected_public_key_sha256": PUBLIC_KEY_SHA256,
+        "authorization_id": AUTHORIZATION,
+        "workflow_subject": WORKFLOW_SUBJECT,
+        "workflow_sha": WORKFLOW_SHA,
+        "verification_time": "2026-11-05T08:04:59Z",
+        "consumption_directory": directory,
+        "signature_verifier": lambda public_key, signature, message: (
+            public_key == PUBLIC_KEY and signature == SIGNATURE and bool(message)
+        ),
+    }
+    parameters.update(overrides)
+    return verify_and_consume_lease(envelope, admission_document(), **parameters)
+
+
 class KmsAdmissionLeaseTests(unittest.TestCase):
     def test_issues_private_provenance_bound_lease_and_verifies_offline(self) -> None:
         aws, key, envelope = issue_lease()
@@ -185,8 +206,9 @@ class KmsAdmissionLeaseTests(unittest.TestCase):
             ({"expected_public_key_sha256": "f" * 64}, "signing key"),
         )
         for overrides, error in cases:
-            with self.subTest(overrides=overrides), self.assertRaisesRegex(
-                BackendAdmissionLeaseError, error
+            with (
+                self.subTest(overrides=overrides),
+                self.assertRaisesRegex(BackendAdmissionLeaseError, error),
             ):
                 verify(envelope, **overrides)
 
@@ -255,6 +277,94 @@ class KmsAdmissionLeaseTests(unittest.TestCase):
                 issued_at=ISSUED_AT,
                 ttl_seconds=300,
             )
+
+    def test_verified_lease_is_consumed_once_with_private_minimal_evidence(
+        self,
+    ) -> None:
+        _, _, envelope = issue_lease()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            receipt = consume(envelope, root)
+
+            self.assertEqual(receipt["status"], "consumed")
+            self.assertTrue(receipt["release_to_plan"])
+            markers = list(root.iterdir())
+            self.assertEqual(len(markers), 1)
+            self.assertEqual(os.stat(markers[0]).st_mode & 0o777, 0o600)
+            retained = markers[0].read_text(encoding="utf-8")
+            retained_document = json.loads(retained)
+            retained_digest = retained_document.pop("consumption_sha256")
+            self.assertEqual(
+                retained_digest,
+                hashlib.sha256(
+                    json.dumps(
+                        retained_document,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest(),
+            )
+            for private in (
+                ACCOUNT,
+                REGION,
+                SIGNING_KEY_ARN,
+                AUTHORIZATION,
+                WORKFLOW_SUBJECT,
+                WORKFLOW_SHA,
+            ):
+                self.assertNotIn(private, retained)
+
+            with self.assertRaisesRegex(BackendAdmissionLeaseError, "already consumed"):
+                consume(envelope, root)
+
+    def test_invalid_lease_cannot_create_consumption_marker(self) -> None:
+        _, _, envelope = issue_lease()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            with self.assertRaisesRegex(BackendAdmissionLeaseError, "signature"):
+                consume(envelope, root, signature_verifier=lambda *_: False)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_concurrent_consumers_allow_exactly_one_plan_release(self) -> None:
+        _, _, envelope = issue_lease()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+
+            def attempt(_position: int) -> str:
+                try:
+                    return str(consume(envelope, root)["status"])
+                except BackendAdmissionLeaseError as exc:
+                    return exc.reason
+
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                outcomes = list(pool.map(attempt, range(6)))
+
+            self.assertEqual(outcomes.count("consumed"), 1)
+            self.assertEqual(outcomes.count("lease was already consumed"), 5)
+            self.assertEqual(len(list(root.iterdir())), 1)
+
+    def test_consumption_directory_must_be_private_and_not_a_symlink(self) -> None:
+        _, _, envelope = issue_lease()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            broad = root / "broad"
+            broad.mkdir(mode=0o755)
+            os.chmod(broad, 0o755)
+            with self.assertRaisesRegex(BackendAdmissionLeaseError, "permissions"):
+                consume(envelope, broad)
+
+            protected = root / "protected"
+            protected.mkdir(mode=0o700)
+            linked = root / "linked"
+            linked.symlink_to(protected, target_is_directory=True)
+            with self.assertRaisesRegex(
+                BackendAdmissionLeaseError, "protected directory"
+            ):
+                consume(envelope, linked)
 
 
 class AdmissionLeaseCliTests(unittest.TestCase):
@@ -333,6 +443,46 @@ class AdmissionLeaseCliTests(unittest.TestCase):
                 return_value=FakeAws(),
             ):
                 self.assertEqual(main(arguments), 2)
+
+    def test_cli_consumes_a_verified_lease_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            admission = root / "admission.json"
+            lease = root / "lease.json"
+            output = root / "consumption.json"
+            markers = root / "consumed"
+            markers.mkdir(mode=0o700)
+            admission.write_text(json.dumps(admission_document()), encoding="utf-8")
+            lease.write_text(json.dumps(issue_lease()[2]), encoding="utf-8")
+            arguments = [
+                "consume",
+                str(lease),
+                str(admission),
+                "--kms-key-arn",
+                SIGNING_KEY_ARN,
+                "--public-key-sha256",
+                PUBLIC_KEY_SHA256,
+                "--authorization-id",
+                AUTHORIZATION,
+                "--workflow-subject",
+                WORKFLOW_SUBJECT,
+                "--workflow-sha",
+                WORKFLOW_SHA,
+                "--verification-time",
+                "2026-11-05T08:04:59Z",
+                "--consumption-directory",
+                str(markers),
+                "--output",
+                str(output),
+            ]
+            with patch(
+                "scripts.lease_terraform_backend_admission.verify_ecdsa_signature",
+                return_value=True,
+            ):
+                self.assertEqual(main(arguments), 0)
+                self.assertEqual(main(arguments), 2)
+            self.assertEqual(json.loads(output.read_text())["status"], "consumed")
+            self.assertEqual(len(list(markers.iterdir())), 1)
 
 
 if __name__ == "__main__":
