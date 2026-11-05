@@ -8,14 +8,15 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 try:
     from scripts.audit_live_terraform_backend import _canonical, _load_receipt
@@ -33,6 +34,7 @@ except ModuleNotFoundError:  # Direct execution from the scripts directory.
 
 LEASE_KIND = "terraform-backend-admission-lease"
 LEASE_AUDIT_KIND = "terraform-backend-admission-lease-audit"
+LEASE_CONSUMPTION_KIND = "terraform-backend-admission-lease-consumption"
 LEASE_SCHEMA_VERSION = 1
 SIGNING_ALGORITHM = "ECDSA_SHA_256"
 KEY_SPEC = "ECC_NIST_P256"
@@ -130,9 +132,7 @@ def _canonical_base64(value: object, label: str) -> bytes:
     try:
         decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise BackendAdmissionLeaseError(
-            f"{label} is not canonical base64"
-        ) from exc
+        raise BackendAdmissionLeaseError(f"{label} is not canonical base64") from exc
     if base64.b64encode(decoded).decode("ascii") != value:
         raise BackendAdmissionLeaseError(f"{label} is not canonical base64")
     return decoded
@@ -221,9 +221,10 @@ class BackendAdmission:
         unsigned = {
             key: value for key, value in document.items() if key != "evidence_sha256"
         }
-        if hashlib.sha256(_canonical(unsigned)).hexdigest() != document[
-            "evidence_sha256"
-        ]:
+        if (
+            hashlib.sha256(_canonical(unsigned)).hexdigest()
+            != document["evidence_sha256"]
+        ):
             raise BackendAdmissionLeaseError(
                 "backend admission receipt self-digest is invalid"
             )
@@ -291,9 +292,9 @@ class KmsLeaseKey:
         if _KEY_ID.fullmatch(key_id) is None:
             raise BackendAdmissionLeaseError("lease key ARN has an invalid key ID")
 
-        metadata = aws.call(
-            "kms", "describe-key", key_id=key_arn, region=region
-        ).get("KeyMetadata")
+        metadata = aws.call("kms", "describe-key", key_id=key_arn, region=region).get(
+            "KeyMetadata"
+        )
         if not isinstance(metadata, dict):
             raise RuntimeError("AWS KMS returned invalid lease-key metadata")
         if (
@@ -308,9 +309,7 @@ class KmsLeaseKey:
         ):
             raise RuntimeError("AWS KMS lease key differs from the reviewed contract")
 
-        response = aws.call(
-            "kms", "get-public-key", key_id=key_arn, region=region
-        )
+        response = aws.call("kms", "get-public-key", key_id=key_arn, region=region)
         public_key = _canonical_base64(response.get("PublicKey"), "AWS KMS public key")
         if (
             response.get("KeyId") not in {key_arn, key_id}
@@ -479,8 +478,7 @@ def verify_lease(
         )
     if (
         signature_document.get("encoding") != "base64"
-        or key_document.get("encoding")
-        != "base64-der-subject-public-key-info"
+        or key_document.get("encoding") != "base64-der-subject-public-key-info"
     ):
         raise BackendAdmissionLeaseError("lease binary encodings are unsupported")
 
@@ -544,6 +542,114 @@ def verify_lease(
     }
 
 
+def _consume_verified_lease(
+    audit: dict[str, object],
+    consumption_directory: str | os.PathLike[str],
+) -> dict[str, object]:
+    """Atomically retain one private marker and reject exact lease replay."""
+
+    if not isinstance(consumption_directory, (str, os.PathLike)):
+        raise TypeError("consumption directory must be a filesystem path")
+    directory = Path(consumption_directory)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        directory_fd = os.open(directory, flags)
+    except OSError as exc:
+        raise BackendAdmissionLeaseError(
+            "consumption directory must be an existing protected directory"
+        ) from exc
+    marker_fd: int | None = None
+    try:
+        directory_stat = os.fstat(directory_fd)
+        if (
+            not stat.S_ISDIR(directory_stat.st_mode)
+            or stat.S_IMODE(directory_stat.st_mode) & 0o077
+        ):
+            raise BackendAdmissionLeaseError(
+                "consumption directory permissions are too broad"
+            )
+        lease_sha256 = audit["lease_sha256"]
+        if not isinstance(lease_sha256, str) or _DIGEST.fullmatch(lease_sha256) is None:
+            raise BackendAdmissionLeaseError("verified lease digest is invalid")
+        verification_sha256 = hashlib.sha256(_canonical(audit)).hexdigest()
+        consumption: dict[str, object] = {
+            "admission_evidence_sha256": audit["admission_evidence_sha256"],
+            "consumed_at": audit["verified_at"],
+            "expires_at": audit["expires_at"],
+            "kind": LEASE_CONSUMPTION_KIND,
+            "lease_sha256": lease_sha256,
+            "release_to_plan": True,
+            "schema_version": LEASE_SCHEMA_VERSION,
+            "status": "consumed",
+            "verification_sha256": verification_sha256,
+        }
+        consumption["consumption_sha256"] = hashlib.sha256(
+            _canonical(consumption)
+        ).hexdigest()
+        payload = _canonical(consumption) + b"\n"
+        marker_name = f"{lease_sha256}.consumed.json"
+        try:
+            marker_fd = os.open(
+                marker_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=directory_fd,
+            )
+        except FileExistsError as exc:
+            raise BackendAdmissionLeaseError("lease was already consumed") from exc
+        except OSError as exc:
+            raise BackendAdmissionLeaseError(
+                "lease consumption marker cannot be created"
+            ) from exc
+        try:
+            offset = 0
+            while offset < len(payload):
+                written = os.write(marker_fd, payload[offset:])
+                if written <= 0:
+                    raise OSError("lease consumption marker write made no progress")
+                offset += written
+            os.fsync(marker_fd)
+            os.fsync(directory_fd)
+        except OSError as exc:
+            raise BackendAdmissionLeaseError(
+                "lease consumption marker cannot be committed"
+            ) from exc
+        return consumption
+    finally:
+        if marker_fd is not None:
+            os.close(marker_fd)
+        os.close(directory_fd)
+
+
+def verify_and_consume_lease(
+    envelope: object,
+    admission_document: object,
+    *,
+    key_arn: str,
+    expected_public_key_sha256: str,
+    authorization_id: str,
+    workflow_subject: str,
+    workflow_sha: str,
+    verification_time: str,
+    consumption_directory: str | os.PathLike[str],
+    signature_verifier: Callable[[bytes, bytes, bytes], bool] = verify_ecdsa_signature,
+) -> dict[str, object]:
+    """Verify a lease and atomically consume it exactly once before planning."""
+
+    audit = verify_lease(
+        envelope,
+        admission_document,
+        key_arn=key_arn,
+        expected_public_key_sha256=expected_public_key_sha256,
+        authorization_id=authorization_id,
+        workflow_subject=workflow_subject,
+        workflow_sha=workflow_sha,
+        verification_time=verification_time,
+        signature_verifier=signature_verifier,
+    )
+    return _consume_verified_lease(audit, consumption_directory)
+
+
 def _add_common_binding_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--kms-key-arn", required=True)
     parser.add_argument("--authorization-id", required=True)
@@ -578,6 +684,18 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--openssl", default="openssl")
     verify.add_argument("--timeout-seconds", type=int, default=10)
     _add_common_binding_arguments(verify)
+
+    consume = commands.add_parser(
+        "consume", help="verify and atomically consume a lease exactly once"
+    )
+    consume.add_argument("lease", type=Path)
+    consume.add_argument("admission_receipt", type=Path)
+    consume.add_argument("--public-key-sha256", required=True)
+    consume.add_argument("--verification-time")
+    consume.add_argument("--openssl", default="openssl")
+    consume.add_argument("--timeout-seconds", type=int, default=10)
+    consume.add_argument("--consumption-directory", type=Path, required=True)
+    _add_common_binding_arguments(consume)
     return parser
 
 
@@ -592,7 +710,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         inputs = {args.admission_receipt.resolve()}
-        if args.command == "verify":
+        if args.command in {"verify", "consume"}:
             inputs.add(args.lease.resolve())
             if len(inputs) != 2:
                 raise BackendAdmissionLeaseError(
@@ -603,9 +721,7 @@ def main(argv: list[str] | None = None) -> int:
         admission_document = _load_receipt(args.admission_receipt)
         if args.command == "issue":
             admission = BackendAdmission.from_document(admission_document)
-            aws = AwsCli(
-                executable=args.aws_cli, timeout_seconds=args.timeout_seconds
-            )
+            aws = AwsCli(executable=args.aws_cli, timeout_seconds=args.timeout_seconds)
             key = KmsLeaseKey.inspect(
                 aws,
                 args.kms_key_arn,
@@ -623,16 +739,14 @@ def main(argv: list[str] | None = None) -> int:
                 ttl_seconds=args.ttl_seconds,
             )
         else:
-            document = verify_lease(
-                _load_receipt(args.lease),
-                admission_document,
-                key_arn=args.kms_key_arn,
-                expected_public_key_sha256=args.public_key_sha256,
-                authorization_id=args.authorization_id,
-                workflow_subject=args.workflow_subject,
-                workflow_sha=args.workflow_sha,
-                verification_time=args.verification_time or _now_utc(),
-                signature_verifier=lambda public_key, signature, message: (
+            verification_arguments = {
+                "key_arn": args.kms_key_arn,
+                "expected_public_key_sha256": args.public_key_sha256,
+                "authorization_id": args.authorization_id,
+                "workflow_subject": args.workflow_subject,
+                "workflow_sha": args.workflow_sha,
+                "verification_time": args.verification_time or _now_utc(),
+                "signature_verifier": lambda public_key, signature, message: (
                     verify_ecdsa_signature(
                         public_key,
                         signature,
@@ -641,7 +755,20 @@ def main(argv: list[str] | None = None) -> int:
                         timeout_seconds=args.timeout_seconds,
                     )
                 ),
-            )
+            }
+            if args.command == "consume":
+                document = verify_and_consume_lease(
+                    _load_receipt(args.lease),
+                    admission_document,
+                    consumption_directory=args.consumption_directory,
+                    **verification_arguments,
+                )
+            else:
+                document = verify_lease(
+                    _load_receipt(args.lease),
+                    admission_document,
+                    **verification_arguments,
+                )
         _write_or_print(args.output, document)
         return 0
     except (OSError, TypeError, ValueError, RuntimeError) as exc:
