@@ -511,7 +511,53 @@ trusted time, verify effective IAM or Environment approval, execute Terraform, o
 privileged operator from rewriting self-digested receipts and their times. The freshness control is
 meaningful only when all three producers and the verifier run on one protected runner with an
 authenticated clock. Keep raw receipts under restricted retention and enforce workflow provenance
-separately; a signed short-lived admission lease is the next trust-boundary increment.
+separately.
+
+Seal the resulting decision with a dedicated customer-managed P-256 `SIGN_VERIFY` KMS key from the
+same account and Region. Issue the lease only in the reviewer-gated Environment job that produced
+the admission receipt:
+
+```bash
+python scripts/lease_terraform_backend_admission.py issue backend-admission.json \
+  --partition "aws" \
+  --account-id "$AWS_ACCOUNT_ID" \
+  --region "$AWS_REGION" \
+  --kms-key-arn "$TERRAFORM_ADMISSION_SIGNING_KEY_ARN" \
+  --authorization-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --workflow-subject "repo:cagataykavas/aws-ml-platform:environment:terraform-staging" \
+  --workflow-sha "$GITHUB_SHA" \
+  --ttl-seconds 300 \
+  --output backend-admission-lease.json
+```
+
+The issuer revalidates the exact v2 admission schema and self-digest before asking KMS to sign. It
+accepts only an enabled customer-managed `ECC_NIST_P256` signing key, checks the returned public
+key and signature metadata, and asks KMS to verify the signature before releasing the envelope.
+The signed claims commit to the admission decision, evidence window, deployment boundary,
+run-attempt authorization, GitHub Environment subject, exact workflow commit, and signing-key
+revision without publishing those raw identifiers. The lease lifetime cannot exceed ten minutes.
+
+Pin the DER public-key digest from a separately reviewed `kms:GetPublicKey` response, then verify
+the lease immediately before `terraform plan` without AWS credentials:
+
+```bash
+python scripts/lease_terraform_backend_admission.py verify \
+  backend-admission-lease.json backend-admission.json \
+  --kms-key-arn "$TERRAFORM_ADMISSION_SIGNING_KEY_ARN" \
+  --public-key-sha256 "$TERRAFORM_ADMISSION_PUBLIC_KEY_SHA256" \
+  --authorization-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --workflow-subject "repo:cagataykavas/aws-ml-platform:environment:terraform-staging" \
+  --workflow-sha "$GITHUB_SHA" \
+  --output backend-admission-lease-audit.json
+```
+
+Verification fails closed for an unpinned key, changed provenance or admission receipt, unknown
+fields, a not-yet-valid or expired lease, an overlong lifetime, or an invalid P-256/SHA-256
+signature. The successful audit is the release-to-plan signal; keep both source receipts private.
+This utility does not provision the signing key, trust the runner clock, inspect the GitHub OIDC
+token itself, prove Environment approval, or call Terraform. The workflow must obtain its subject
+from the validated OIDC identity, pin the key out of band, restrict `kms:Sign` to the protected job,
+and keep issuance and plan verification inside one authenticated-clock boundary.
 
 ### Opt-in redrive prerequisites
 
@@ -571,6 +617,7 @@ infra/
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
 ├── audit_terraform_plan.py # private-plan action budget and exact destructive approval gate
+├── lease_terraform_backend_admission.py # short-lived KMS-signed plan-admission lease
 ├── build_network_incident_canary_route.py # fail-closed Environment route builder
 ├── build_network_incident_redrive_route.py # non-production redrive boundary builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
@@ -583,6 +630,7 @@ scripts/
 └── run_network_incident_redrive_canary.py # bounded poison-message redrive drill
 tests/
 ├── test_audit_terraform_plan.py # plan parsing, privacy and admission-policy tests
+├── test_lease_terraform_backend_admission.py # lease expiry, provenance and key-pin tests
 ├── test_build_network_incident_canary_route.py # environment route-boundary tests
 ├── test_build_network_incident_redrive_route.py # fault-route boundary tests
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
