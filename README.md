@@ -575,13 +575,34 @@ lease fails closed. The marker contains only lease/admission/verification commit
 times, not AWS, Environment, authorization, or workflow identifiers. A crash after marker creation
 intentionally requires a new lease rather than risking duplicate plan authorization.
 
+For independently controlled replay evidence, copy the receipt into a private, versioned S3 bucket
+whose default Object Lock rule is COMPLIANCE mode, then archive it before the reviewed plan command:
+
+```bash
+python scripts/archive_terraform_backend_consumption.py \
+  backend-admission-lease-consumption.json \
+  --bucket "$TERRAFORM_ADMISSION_CONSUMPTION_BUCKET" \
+  --owner-account-id "$AWS_ACCOUNT_ID" \
+  --region "$AWS_REGION" \
+  --retention-days 30 \
+  > backend-admission-consumption-archive.json
+```
+
+The archiver rejects links, duplicate JSON keys, unknown fields, changed self-digests, invalid lease
+windows, or a bucket whose versioning, default retention, or public-access block differs from the
+reviewed contract. It uploads canonical bytes under a content-addressed key with `If-None-Match: *`,
+SHA-256 checksum verification and AES-256 encryption, then checks COMPLIANCE retention on the exact
+returned object version. Its output contains only receipt and storage commitments, retention time,
+and status; bucket, account, Region, object key, and version ID remain private. The archive bucket
+and narrowly scoped write role must be provisioned and reviewed separately.
+
 This utility does not provision the signing key, trust the runner clock, inspect the GitHub OIDC
 token itself, prove Environment approval, or call Terraform. The workflow must obtain its subject
 from the validated OIDC identity, pin the key out of band, restrict `kms:Sign` to the protected job,
 and keep issuance and plan verification inside one authenticated-clock boundary. Protected runner
-storage is still a local replay boundary: a privileged host can delete consumption markers, so
-retain the privacy-reduced consumption receipt independently when stronger replay evidence is
-required.
+storage is still a local replay boundary: a privileged host can delete consumption markers. The
+Object Lock copy makes that deletion independently auditable, but does not prevent a privileged
+host from bypassing the consume-and-archive sequence; enforce both commands in the protected job.
 
 ### Opt-in redrive prerequisites
 
@@ -642,6 +663,7 @@ infra/
 scripts/
 ├── audit_terraform_plan.py # private-plan action budget and exact destructive approval gate
 ├── lease_terraform_backend_admission.py # short-lived KMS-signed plan-admission lease
+├── archive_terraform_backend_consumption.py # immutable lease-consumption custody
 ├── build_network_incident_canary_route.py # fail-closed Environment route builder
 ├── build_network_incident_redrive_route.py # non-production redrive boundary builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
@@ -655,6 +677,7 @@ scripts/
 tests/
 ├── test_audit_terraform_plan.py # plan parsing, privacy and admission-policy tests
 ├── test_lease_terraform_backend_admission.py # lease expiry, provenance, replay and key-pin tests
+├── test_archive_terraform_backend_consumption.py # immutable receipt contract tests
 ├── test_build_network_incident_canary_route.py # environment route-boundary tests
 ├── test_build_network_incident_redrive_route.py # fault-route boundary tests
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
