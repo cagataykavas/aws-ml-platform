@@ -152,6 +152,18 @@ def _retention_time(value: object) -> datetime:
 
 
 @dataclass(frozen=True)
+class RetainedObject:
+    """Privacy-reduced proof that one exact payload version is under retention."""
+
+    bucket_sha256: str
+    checksum_sha256: str
+    object_key_sha256: str
+    retain_until: str
+    retention_mode: str
+    version_id_sha256: str
+
+
+@dataclass(frozen=True)
 class ObjectLockArchive:
     bucket: str
     owner_account_id: str
@@ -203,22 +215,32 @@ class ObjectLockArchive:
             raise RuntimeError("archive bucket public-access block is incomplete")
         return cls(bucket, owner_account_id, region, retention_days)
 
-    def put(
+    def retain(
         self,
         aws: AwsClient,
-        envelope: dict[str, object],
+        payload: bytes,
         *,
-        workflow_run_id: str,
-        workflow_run_attempt: str,
+        key: str,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
-    ) -> dict[str, object]:
-        run_id = _positive_integer(workflow_run_id, "workflow run ID", 10**20 - 1)
-        attempt = _positive_integer(workflow_run_attempt, "workflow run attempt", 100)
-        payload = _canonical(envelope)
+    ) -> RetainedObject:
+        """Retain canonical bytes and verify the exact returned object version."""
+
+        if not payload:
+            raise ValueError("archive payload must not be empty")
+        try:
+            key_bytes = key.encode("ascii")
+        except (AttributeError, UnicodeEncodeError) as exc:
+            raise ValueError("archive object key must be canonical ASCII") from exc
+        if (
+            not 1 <= len(key_bytes) <= 1024
+            or key.startswith("/")
+            or any(part in {"", ".", ".."} for part in key.split("/"))
+            or any(byte < 0x20 or byte == 0x7F for byte in key_bytes)
+        ):
+            raise ValueError("archive object key must be canonical ASCII")
         digest = hashlib.sha256(payload).digest()
         digest_hex = digest.hex()
         checksum = base64.b64encode(digest).decode("ascii")
-        key = f"redrive-evidence/v1/{run_id}/{attempt}/{digest_hex}.json"
 
         with tempfile.NamedTemporaryFile() as source:
             source.write(payload)
@@ -264,17 +286,41 @@ class ObjectLockArchive:
             raise RuntimeError(
                 "stored evidence does not have the reviewed compliance retention"
             )
+        return RetainedObject(
+            bucket_sha256=hashlib.sha256(self.bucket.encode("ascii")).hexdigest(),
+            checksum_sha256=digest_hex,
+            object_key_sha256=hashlib.sha256(key_bytes).hexdigest(),
+            retain_until=retain_until.isoformat().replace("+00:00", "Z"),
+            retention_mode="COMPLIANCE",
+            version_id_sha256=hashlib.sha256(version_id.encode("utf-8")).hexdigest(),
+        )
+
+    def put(
+        self,
+        aws: AwsClient,
+        envelope: dict[str, object],
+        *,
+        workflow_run_id: str,
+        workflow_run_attempt: str,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> dict[str, object]:
+        run_id = _positive_integer(workflow_run_id, "workflow run ID", 10**20 - 1)
+        attempt = _positive_integer(workflow_run_attempt, "workflow run attempt", 100)
+        payload = _canonical(envelope)
+        digest_hex = hashlib.sha256(payload).hexdigest()
+        key = f"redrive-evidence/v1/{run_id}/{attempt}/{digest_hex}.json"
+        retained = self.retain(aws, payload, key=key, now=now)
         return {
-            "bucket_sha256": hashlib.sha256(self.bucket.encode("ascii")).hexdigest(),
-            "checksum_sha256": digest_hex,
+            "bucket_sha256": retained.bucket_sha256,
+            "checksum_sha256": retained.checksum_sha256,
             "evidence_sha256": digest_hex,
             "kind": ARCHIVE_KIND,
-            "object_key_sha256": hashlib.sha256(key.encode("ascii")).hexdigest(),
-            "retain_until": retain_until.isoformat().replace("+00:00", "Z"),
-            "retention_mode": "COMPLIANCE",
+            "object_key_sha256": retained.object_key_sha256,
+            "retain_until": retained.retain_until,
+            "retention_mode": retained.retention_mode,
             "schema_version": 1,
             "status": "pass",
-            "version_id_sha256": hashlib.sha256(version_id.encode("utf-8")).hexdigest(),
+            "version_id_sha256": retained.version_id_sha256,
         }
 
 
