@@ -619,6 +619,26 @@ COMPLIANCE receipt; a later retention extension is allowed but shortening or mod
 closed. The privacy-reduced audit receipt omits raw storage coordinates and carries its own digest.
 Grant only `s3:GetObjectVersion` and `s3:GetObjectRetention` on the exact retained prefix.
 
+For a protected recovery run, Terraform can provision a separate opt-in OIDC auditor over the
+externally governed archive bucket without granting list, write, delete, or retention-bypass access:
+
+```hcl
+enable_backend_consumption_auditor_role              = true
+backend_consumption_archive_bucket_arn               = "arn:aws:s3:::reviewed-backend-consumption-archive"
+backend_consumption_auditor_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+backend_consumption_auditor_github_repository        = "cagataykavas/aws-ml-platform"
+backend_consumption_auditor_github_environment       = "backend-consumption-audit-staging"
+```
+
+The role policy is restricted to `terraform-backend-consumptions/v1/*`. The manual
+`backend-consumption-live-audit.yml` workflow runs only from the default branch inside the selected
+protected Environment, exchanges GitHub OIDC for a 15-minute role session, and narrows that session
+again to one exact bucket/key through an inline policy. It attests the active STS account, role, and
+workflow-bound session before calling the exact-version verifier. Private storage coordinates,
+version ID, archive receipt, and expected consumption digest are supplied as Environment secrets;
+only the privacy-reduced audit receipt becomes a workflow artifact. The archive bucket itself and
+its writer remain separately governed and are intentionally not created by this boundary.
+
 This utility does not provision the signing key, trust the runner clock, inspect the GitHub OIDC
 token itself, prove Environment approval, or call Terraform. The workflow must obtain its subject
 from the validated OIDC identity, pin the key out of band, restrict `kms:Sign` to the protected job,
@@ -683,6 +703,7 @@ infra/
 ├── incident_route.tf # optional encrypted topic, governed queue and dead-letter route
 ├── incident_redrive_drill.tf # opt-in isolated queues and Environment-scoped OIDC role
 ├── retained_evidence_auditor.tf # opt-in read-only recovery-auditor OIDC role
+├── backend_consumption_auditor.tf # opt-in exact-prefix backend-consumption auditor
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
@@ -690,6 +711,7 @@ scripts/
 ├── lease_terraform_backend_admission.py # short-lived KMS-signed plan-admission lease
 ├── archive_terraform_backend_consumption.py # immutable lease-consumption custody
 ├── verify_retained_terraform_backend_consumption.py # exact-version recovery audit
+├── run_retained_backend_consumption_audit.py # OIDC caller attestation and backend audit
 ├── build_network_incident_canary_route.py # fail-closed Environment route builder
 ├── build_network_incident_redrive_route.py # non-production redrive boundary builder
 ├── verify_network_incident_route.py # read-only deployed-route preflight
@@ -705,6 +727,7 @@ tests/
 ├── test_lease_terraform_backend_admission.py # lease expiry, provenance, replay and key-pin tests
 ├── test_archive_terraform_backend_consumption.py # immutable receipt contract tests
 ├── test_verify_retained_terraform_backend_consumption.py # read-only recovery audit tests
+├── test_run_retained_backend_consumption_audit.py # OIDC workflow and handoff tests
 ├── test_build_network_incident_canary_route.py # environment route-boundary tests
 ├── test_build_network_incident_redrive_route.py # fault-route boundary tests
 ├── test_delivery_canary_workflow.py # OIDC, permissions and artifact contract
