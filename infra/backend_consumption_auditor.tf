@@ -49,6 +49,21 @@ variable "backend_consumption_auditor_github_repository" {
   }
 }
 
+variable "backend_consumption_auditor_github_repository_id" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Immutable GitHub repository ID allowed to assume the backend-consumption auditor role."
+
+  validation {
+    condition = (
+      var.backend_consumption_auditor_github_repository_id == null
+      || can(regex("^[1-9][0-9]{0,19}$", var.backend_consumption_auditor_github_repository_id))
+    )
+    error_message = "backend_consumption_auditor_github_repository_id must be null or a positive integer string."
+  }
+}
+
 variable "backend_consumption_auditor_github_environment" {
   type        = string
   default     = null
@@ -61,6 +76,43 @@ variable "backend_consumption_auditor_github_environment" {
       || can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$", var.backend_consumption_auditor_github_environment))
     )
     error_message = "backend_consumption_auditor_github_environment must use 1-100 safe subject characters."
+  }
+}
+
+variable "backend_consumption_auditor_github_ref" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Exact default-branch ref allowed to assume the backend-consumption auditor role."
+
+  validation {
+    condition = (
+      var.backend_consumption_auditor_github_ref == null
+      || try(
+        can(regex("(^refs/heads/[A-Za-z0-9]$|^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,199}[A-Za-z0-9_-]$)", var.backend_consumption_auditor_github_ref))
+        && !strcontains(var.backend_consumption_auditor_github_ref, "..")
+        && !strcontains(var.backend_consumption_auditor_github_ref, "//")
+        && !strcontains(var.backend_consumption_auditor_github_ref, "/.")
+        && !endswith(var.backend_consumption_auditor_github_ref, ".lock"),
+        false,
+      )
+    )
+    error_message = "backend_consumption_auditor_github_ref must be null or a canonical refs/heads/... ref."
+  }
+}
+
+variable "backend_consumption_auditor_github_workflow" {
+  type        = string
+  default     = null
+  nullable    = true
+  description = "Exact GitHub Actions workflow name allowed to assume the backend-consumption auditor role."
+
+  validation {
+    condition = (
+      var.backend_consumption_auditor_github_workflow == null
+      || can(regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$", var.backend_consumption_auditor_github_workflow))
+    )
+    error_message = "backend_consumption_auditor_github_workflow must use 1-100 safe claim characters."
   }
 }
 
@@ -109,10 +161,13 @@ resource "terraform_data" "backend_consumption_auditor_contract" {
   count = var.enable_backend_consumption_auditor_role ? 1 : 0
 
   input = {
-    archive_bucket_arn = var.backend_consumption_archive_bucket_arn
-    oidc_provider_arn  = var.backend_consumption_auditor_github_oidc_provider_arn
-    github_repository  = var.backend_consumption_auditor_github_repository
-    github_environment = var.backend_consumption_auditor_github_environment
+    archive_bucket_arn   = var.backend_consumption_archive_bucket_arn
+    oidc_provider_arn    = var.backend_consumption_auditor_github_oidc_provider_arn
+    github_repository    = var.backend_consumption_auditor_github_repository
+    github_repository_id = var.backend_consumption_auditor_github_repository_id
+    github_environment   = var.backend_consumption_auditor_github_environment
+    github_ref           = var.backend_consumption_auditor_github_ref
+    github_workflow      = var.backend_consumption_auditor_github_workflow
   }
 
   lifecycle {
@@ -153,8 +208,23 @@ resource "terraform_data" "backend_consumption_auditor_contract" {
     }
 
     precondition {
+      condition     = var.backend_consumption_auditor_github_repository_id != null
+      error_message = "The backend-consumption auditor requires the immutable GitHub repository ID."
+    }
+
+    precondition {
       condition     = var.backend_consumption_auditor_github_environment != null
       error_message = "The backend-consumption auditor requires one explicit protected GitHub Environment."
+    }
+
+    precondition {
+      condition     = var.backend_consumption_auditor_github_ref != null
+      error_message = "The backend-consumption auditor requires one explicit default-branch ref."
+    }
+
+    precondition {
+      condition     = var.backend_consumption_auditor_github_workflow != null
+      error_message = "The backend-consumption auditor requires one explicit workflow name."
     }
   }
 }
@@ -175,8 +245,16 @@ resource "aws_iam_role" "backend_consumption_auditor" {
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = local.backend_consumption_auditor_oidc_subject
+          "token.actions.githubusercontent.com:aud"           = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub"           = local.backend_consumption_auditor_oidc_subject
+          "token.actions.githubusercontent.com:repository"    = var.backend_consumption_auditor_github_repository
+          "token.actions.githubusercontent.com:repository_id" = var.backend_consumption_auditor_github_repository_id
+          "token.actions.githubusercontent.com:environment"   = var.backend_consumption_auditor_github_environment
+          "token.actions.githubusercontent.com:ref"           = var.backend_consumption_auditor_github_ref
+          "token.actions.githubusercontent.com:workflow"      = var.backend_consumption_auditor_github_workflow
+        }
+        StringLike = {
+          "sts:RoleSessionName" = "retained-audit-?*"
         }
       }
     }]
@@ -211,8 +289,12 @@ resource "aws_iam_role_policy" "backend_consumption_auditor" {
 
 output "backend_consumption_auditor" {
   value = var.enable_backend_consumption_auditor_role ? {
-    role_arn            = local.backend_consumption_auditor_role_arn
-    github_oidc_subject = local.backend_consumption_auditor_oidc_subject
+    role_arn                  = local.backend_consumption_auditor_role_arn
+    github_oidc_subject       = local.backend_consumption_auditor_oidc_subject
+    github_repository_id      = var.backend_consumption_auditor_github_repository_id
+    github_oidc_ref           = var.backend_consumption_auditor_github_ref
+    github_oidc_workflow      = var.backend_consumption_auditor_github_workflow
+    role_session_name_pattern = "retained-audit-?*"
     github_environment_variables = {
       AWS_REGION                               = var.aws_region
       AWS_ACCOUNT_ID                           = data.aws_caller_identity.current.account_id

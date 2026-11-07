@@ -49,7 +49,10 @@ run "backend_consumption_auditor_is_environment_bound_and_prefix_read_only" {
     backend_consumption_archive_bucket_arn               = "arn:aws:s3:::ml-platform-backend-consumptions-123456789012"
     backend_consumption_auditor_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
     backend_consumption_auditor_github_repository        = "cagataykavas/aws-ml-platform"
+    backend_consumption_auditor_github_repository_id     = "1330973918"
     backend_consumption_auditor_github_environment       = "backend-consumption-audit-staging"
+    backend_consumption_auditor_github_ref               = "refs/heads/main"
+    backend_consumption_auditor_github_workflow          = "backend-consumption-live-audit"
   }
 
   assert {
@@ -57,9 +60,15 @@ run "backend_consumption_auditor_is_environment_bound_and_prefix_read_only" {
       jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Principal.Federated == "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
       && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
       && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:cagataykavas/aws-ml-platform:environment:backend-consumption-audit-staging"
+      && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:repository"] == "cagataykavas/aws-ml-platform"
+      && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:repository_id"] == "1330973918"
+      && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:environment"] == "backend-consumption-audit-staging"
+      && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:ref"] == "refs/heads/main"
+      && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:workflow"] == "backend-consumption-live-audit"
+      && jsondecode(aws_iam_role.backend_consumption_auditor[0].assume_role_policy).Statement[0].Condition.StringLike["sts:RoleSessionName"] == "retained-audit-?*"
       && !strcontains(aws_iam_role.backend_consumption_auditor[0].assume_role_policy, "ref:refs/heads/")
     )
-    error_message = "The auditor trust must bind the account-local provider, audience and exact protected Environment."
+    error_message = "The auditor trust must bind the account-local provider, protected Environment, repository, ref, workflow, and traceable session name."
   }
 
   assert {
@@ -81,6 +90,10 @@ run "backend_consumption_auditor_is_environment_bound_and_prefix_read_only" {
     condition = (
       output.backend_consumption_auditor.role_arn == "arn:aws:iam::123456789012:role/backend-consumption-auditor"
       && output.backend_consumption_auditor.github_oidc_subject == "repo:cagataykavas/aws-ml-platform:environment:backend-consumption-audit-staging"
+      && output.backend_consumption_auditor.github_repository_id == "1330973918"
+      && output.backend_consumption_auditor.github_oidc_ref == "refs/heads/main"
+      && output.backend_consumption_auditor.github_oidc_workflow == "backend-consumption-live-audit"
+      && output.backend_consumption_auditor.role_session_name_pattern == "retained-audit-?*"
       && output.backend_consumption_auditor.github_environment_variables.AWS_REGION == "eu-central-1"
       && output.backend_consumption_auditor.github_environment_variables.AWS_ACCOUNT_ID == "123456789012"
       && output.backend_consumption_auditor.github_environment_variables.AWS_BACKEND_CONSUMPTION_AUDITOR_ROLE_ARN == "arn:aws:iam::123456789012:role/backend-consumption-auditor"
@@ -97,10 +110,58 @@ run "backend_consumption_auditor_requires_archive_bucket" {
     enable_backend_consumption_auditor_role              = true
     backend_consumption_auditor_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
     backend_consumption_auditor_github_repository        = "cagataykavas/aws-ml-platform"
+    backend_consumption_auditor_github_repository_id     = "1330973918"
+    backend_consumption_auditor_github_environment       = "backend-consumption-audit-staging"
+    backend_consumption_auditor_github_ref               = "refs/heads/main"
+    backend_consumption_auditor_github_workflow          = "backend-consumption-live-audit"
+  }
+
+  expect_failures = [terraform_data.backend_consumption_auditor_contract[0]]
+}
+
+run "backend_consumption_auditor_requires_ref_and_workflow_claims" {
+  command = plan
+
+  variables {
+    enable_backend_consumption_auditor_role              = true
+    backend_consumption_archive_bucket_arn               = "arn:aws:s3:::ml-platform-backend-consumptions-123456789012"
+    backend_consumption_auditor_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+    backend_consumption_auditor_github_repository        = "cagataykavas/aws-ml-platform"
+    backend_consumption_auditor_github_repository_id     = "1330973918"
     backend_consumption_auditor_github_environment       = "backend-consumption-audit-staging"
   }
 
   expect_failures = [terraform_data.backend_consumption_auditor_contract[0]]
+}
+
+run "backend_consumption_auditor_rejects_unsafe_ref" {
+  command = plan
+
+  variables {
+    backend_consumption_auditor_github_ref = "refs/heads/release/../main"
+  }
+
+  expect_failures = [var.backend_consumption_auditor_github_ref]
+}
+
+run "backend_consumption_auditor_rejects_invalid_repository_id" {
+  command = plan
+
+  variables {
+    backend_consumption_auditor_github_repository_id = "owner/repository"
+  }
+
+  expect_failures = [var.backend_consumption_auditor_github_repository_id]
+}
+
+run "backend_consumption_auditor_rejects_unsafe_workflow_name" {
+  command = plan
+
+  variables {
+    backend_consumption_auditor_github_workflow = "backend consumption audit"
+  }
+
+  expect_failures = [var.backend_consumption_auditor_github_workflow]
 }
 
 run "backend_consumption_auditor_rejects_cross_account_provider" {
@@ -111,7 +172,10 @@ run "backend_consumption_auditor_rejects_cross_account_provider" {
     backend_consumption_archive_bucket_arn               = "arn:aws:s3:::ml-platform-backend-consumptions-123456789012"
     backend_consumption_auditor_github_oidc_provider_arn = "arn:aws:iam::999999999999:oidc-provider/token.actions.githubusercontent.com"
     backend_consumption_auditor_github_repository        = "cagataykavas/aws-ml-platform"
+    backend_consumption_auditor_github_repository_id     = "1330973918"
     backend_consumption_auditor_github_environment       = "backend-consumption-audit-staging"
+    backend_consumption_auditor_github_ref               = "refs/heads/main"
+    backend_consumption_auditor_github_workflow          = "backend-consumption-live-audit"
   }
 
   expect_failures = [terraform_data.backend_consumption_auditor_contract[0]]
