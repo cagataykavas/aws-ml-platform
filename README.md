@@ -627,7 +627,10 @@ enable_backend_consumption_auditor_role              = true
 backend_consumption_archive_bucket_arn               = "arn:aws:s3:::reviewed-backend-consumption-archive"
 backend_consumption_auditor_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
 backend_consumption_auditor_github_repository        = "cagataykavas/aws-ml-platform"
+backend_consumption_auditor_github_repository_id     = "1330973918"
 backend_consumption_auditor_github_environment       = "backend-consumption-audit-staging"
+backend_consumption_auditor_github_ref               = "refs/heads/main"
+backend_consumption_auditor_github_workflow          = "backend-consumption-live-audit"
 ```
 
 The role policy is restricted to `terraform-backend-consumptions/v1/*`. The manual
@@ -639,10 +642,18 @@ version ID, archive receipt, and expected consumption digest are supplied as Env
 only the privacy-reduced audit receipt becomes a workflow artifact. The archive bucket itself and
 its writer remain separately governed and are intentionally not created by this boundary.
 
-This utility does not provision the signing key, trust the runner clock, inspect the GitHub OIDC
-token itself, prove Environment approval, or call Terraform. The workflow must obtain its subject
-from the validated OIDC identity, pin the key out of band, restrict `kms:Sign` to the protected job,
-and keep issuance and plan verification inside one authenticated-clock boundary. Protected runner
+The role trust independently requires exact OIDC `repository`, immutable `repository_id`,
+`environment`, `ref`, and `workflow` claims in addition to the audience and environment-bound
+subject. It also requires the CloudTrail-visible role session name to match `retained-audit-?*`.
+Consequently, a renamed/recreated repository, different branch, differently named workflow, or
+off-pattern session cannot reuse an otherwise approved Environment token to obtain this role.
+Treat changes to the default branch, workflow name, or session convention as trust-policy
+migrations and review them together with the protected workflow.
+
+This utility does not provision the signing key, trust the runner clock, prove Environment approval,
+or call Terraform. The workflow must obtain its claims from the validated OIDC identity, pin the
+key out of band, restrict `kms:Sign` to the protected job, and keep issuance and plan verification
+inside one authenticated-clock boundary. Protected runner
 storage is still a local replay boundary: a privileged host can delete consumption markers. The
 Object Lock copy makes that deletion independently auditable, but does not prevent a privileged
 host from bypassing the consume-and-archive sequence. The recovery audit proves storage and receipt

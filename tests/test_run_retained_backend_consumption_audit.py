@@ -136,6 +136,17 @@ class BackendConsumptionAuditWorkflowTests(unittest.TestCase):
         self.assertNotIn("aws-access-key-id:", self.workflow)
         self.assertNotIn("aws-secret-access-key:", self.workflow)
 
+    def test_oidc_session_matches_the_trusted_workflow_provenance(self) -> None:
+        session_name = "retained-audit-${{ github.run_id }}-${{ github.run_attempt }}"
+
+        self.assertTrue(
+            self.workflow.startswith("name: backend-consumption-live-audit\n")
+        )
+        self.assertIn(f"AUDITOR_SESSION_NAME: {session_name}", self.workflow)
+        self.assertIn(f"role-session-name: {session_name}", self.workflow)
+        self.assertIn('--session-name "$AUDITOR_SESSION_NAME"', self.workflow)
+        self.assertEqual(self.workflow.count(session_name), 2)
+
     def test_fails_closed_and_archives_only_privacy_reduced_output(self) -> None:
         self.assertIn(
             '[[ "$BACKEND_CONSUMPTION_AUDIT_ENABLED" != "true" ]]', self.workflow
