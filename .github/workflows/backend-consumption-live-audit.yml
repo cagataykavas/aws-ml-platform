@@ -1,0 +1,117 @@
+name: backend-consumption-live-audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Protected non-production Environment containing the auditor boundary
+        type: environment
+        required: true
+
+permissions: {}
+
+jobs:
+  backend-consumption-audit:
+    name: OIDC retained backend-consumption audit
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: backend-consumption-audit-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_BACKEND_CONSUMPTION_AUDITOR_ROLE_ARN: ${{ vars.AWS_BACKEND_CONSUMPTION_AUDITOR_ROLE_ARN }}
+      BACKEND_CONSUMPTION_AUDIT_ENABLED: ${{ vars.BACKEND_CONSUMPTION_AUDIT_ENABLED }}
+      AUDITOR_SESSION_NAME: retained-audit-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate protected audit configuration
+        shell: bash
+        env:
+          BACKEND_CONSUMPTION_BUCKET: ${{ secrets.BACKEND_CONSUMPTION_BUCKET }}
+          BACKEND_CONSUMPTION_OBJECT_KEY: ${{ secrets.BACKEND_CONSUMPTION_OBJECT_KEY }}
+          BACKEND_CONSUMPTION_VERSION_ID: ${{ secrets.BACKEND_CONSUMPTION_VERSION_ID }}
+          BACKEND_CONSUMPTION_ARCHIVE_RECEIPT: ${{ secrets.BACKEND_CONSUMPTION_ARCHIVE_RECEIPT }}
+          EXPECTED_CONSUMPTION_SHA256: ${{ secrets.EXPECTED_CONSUMPTION_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [[ "$BACKEND_CONSUMPTION_AUDIT_ENABLED" != "true" ]]; then
+            echo "Protected Environment must explicitly enable the backend-consumption audit." >&2
+            exit 2
+          fi
+          for name in AWS_REGION AWS_ACCOUNT_ID AWS_BACKEND_CONSUMPTION_AUDITOR_ROLE_ARN BACKEND_CONSUMPTION_BUCKET BACKEND_CONSUMPTION_OBJECT_KEY BACKEND_CONSUMPTION_VERSION_ID BACKEND_CONSUMPTION_ARCHIVE_RECEIPT EXPECTED_CONSUMPTION_SHA256; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Protected Environment value is missing: $name" >&2
+              exit 2
+            fi
+          done
+          umask 077
+          printf '%s' "$BACKEND_CONSUMPTION_ARCHIVE_RECEIPT" > "$RUNNER_TEMP/backend-consumption-archive-receipt.json"
+
+      - name: Exchange GitHub OIDC token for exact-object read credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_BACKEND_CONSUMPTION_AUDITOR_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          role-duration-seconds: 900
+          role-session-name: retained-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          retry-max-attempts: 3
+          action-timeout-s: 60
+          mask-aws-account-id: true
+          unset-current-credentials: true
+          translate-env-variables: false
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObjectVersion","s3:GetObjectRetention"],"Resource":"arn:aws:s3:::${{ secrets.BACKEND_CONSUMPTION_BUCKET }}/${{ secrets.BACKEND_CONSUMPTION_OBJECT_KEY }}"}]}
+
+      - name: Attest caller and audit the immutable consumption version
+        env:
+          BACKEND_CONSUMPTION_BUCKET: ${{ secrets.BACKEND_CONSUMPTION_BUCKET }}
+          BACKEND_CONSUMPTION_OBJECT_KEY: ${{ secrets.BACKEND_CONSUMPTION_OBJECT_KEY }}
+          BACKEND_CONSUMPTION_VERSION_ID: ${{ secrets.BACKEND_CONSUMPTION_VERSION_ID }}
+          EXPECTED_CONSUMPTION_SHA256: ${{ secrets.EXPECTED_CONSUMPTION_SHA256 }}
+        run: >-
+          python scripts/run_retained_backend_consumption_audit.py
+          "$RUNNER_TEMP/backend-consumption-archive-receipt.json"
+          --auditor-role-arn "$AWS_BACKEND_CONSUMPTION_AUDITOR_ROLE_ARN"
+          --session-name "$AUDITOR_SESSION_NAME"
+          --bucket "$BACKEND_CONSUMPTION_BUCKET"
+          --key "$BACKEND_CONSUMPTION_OBJECT_KEY"
+          --version-id "$BACKEND_CONSUMPTION_VERSION_ID"
+          --expected-consumption-sha256 "$EXPECTED_CONSUMPTION_SHA256"
+          --owner-account-id "$AWS_ACCOUNT_ID"
+          --region "$AWS_REGION"
+          --timeout-seconds 30
+          > "$RUNNER_TEMP/backend-consumption-audit-receipt.json"
+
+      - name: Archive privacy-reduced audit receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-consumption-audit-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backend-consumption-audit-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Remove private audit inputs
+        if: ${{ always() }}
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/backend-consumption-archive-receipt.json"
