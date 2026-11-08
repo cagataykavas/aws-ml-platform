@@ -1,4 +1,6 @@
 mock_provider "aws" {
+  override_during = plan
+
   override_data {
     target = data.aws_availability_zones.available
     values = {
