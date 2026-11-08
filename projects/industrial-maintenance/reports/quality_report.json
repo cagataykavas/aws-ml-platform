@@ -1,0 +1,30 @@
+{
+  "checks": {
+    "Air temperature [K]": {
+      "missing_fraction": 0.0,
+      "standardized_mean_shift": 0.9796456308798581,
+      "review_required": false
+    },
+    "Process temperature [K]": {
+      "missing_fraction": 0.0,
+      "standardized_mean_shift": 0.5617923732684129,
+      "review_required": false
+    },
+    "Rotational speed [rpm]": {
+      "missing_fraction": 0.0,
+      "standardized_mean_shift": 0.03114292532062427,
+      "review_required": false
+    },
+    "Torque [Nm]": {
+      "missing_fraction": 0.0,
+      "standardized_mean_shift": 0.010148305329999815,
+      "review_required": false
+    },
+    "Tool wear [min]": {
+      "missing_fraction": 0.0,
+      "standardized_mean_shift": 0.04142147961903148,
+      "review_required": false
+    }
+  },
+  "warning": "Heuristic review thresholds, not a statistical guarantee or automatic retraining command"
+}

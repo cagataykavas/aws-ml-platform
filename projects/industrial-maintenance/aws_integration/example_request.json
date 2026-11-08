@@ -1,0 +1,61 @@
+{
+  "AutoMLJobName": "maintenance-demo-offline",
+  "RoleArn": "arn:aws:iam::000000000000:role/REPLACE-ME",
+  "AutoMLJobInputDataConfig": [
+    {
+      "ChannelType": "training",
+      "ContentType": "text/csv;header=present",
+      "CompressionType": "None",
+      "DataSource": {
+        "S3DataSource": {
+          "S3DataType": "S3Prefix",
+          "S3Uri": "s3://replace-me-maintenance/train/"
+        }
+      }
+    },
+    {
+      "ChannelType": "validation",
+      "ContentType": "text/csv;header=present",
+      "CompressionType": "None",
+      "DataSource": {
+        "S3DataSource": {
+          "S3DataType": "S3Prefix",
+          "S3Uri": "s3://replace-me-maintenance/validation/"
+        }
+      }
+    }
+  ],
+  "OutputDataConfig": {
+    "S3OutputPath": "s3://replace-me-maintenance/output/"
+  },
+  "AutoMLProblemTypeConfig": {
+    "TabularJobConfig": {
+      "TargetAttributeName": "Machine failure",
+      "ProblemType": "BinaryClassification",
+      "Mode": "HYPERPARAMETER_TUNING",
+      "CandidateGenerationConfig": {
+        "AlgorithmsConfig": [
+          {
+            "AutoMLAlgorithms": [
+              "xgboost"
+            ]
+          }
+        ]
+      },
+      "CompletionCriteria": {
+        "MaxCandidates": 2,
+        "MaxRuntimePerTrainingJobInSeconds": 600,
+        "MaxAutoMLJobRuntimeInSeconds": 1800
+      }
+    }
+  },
+  "AutoMLJobObjective": {
+    "MetricName": "F1"
+  },
+  "Tags": [
+    {
+      "Key": "Project",
+      "Value": "industrial-maintenance-portfolio"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "task": "Current-record fault classification, not advance failure prediction or RUL",
+  "dataset": "UCI AI4I 2020, public synthetic benchmark",
+  "source_sha256": "dc6630cd9b1f0f853922fad78a1b6436570d3f1ec863f1dd5c4340ac56bc8a8e",
+  "split": "UDI ordered blocks; no claim that UDI is a real timestamp or machine ID",
+  "split_rows": {
+    "train": 6000,
+    "selection": 1500,
+    "calibration": 1000,
+    "test": 1500
+  },
+  "split_positive_counts": {
+    "train": 255,
+    "selection": 29,
+    "calibration": 26,
+    "test": 29
+  },
+  "selection_average_precision": {
+    "logistic": 0.4090622073487162,
+    "random_forest": 0.554443234543212,
+    "hist_gradient_boosting": 0.6721036384824548
+  },
+  "winner": "hist_gradient_boosting",
+  "threshold": 0.016984715284715287,
+  "test": {
+    "rows": 1500,
+    "positives": 29,
+    "average_precision": 0.6804453122161869,
+    "precision": 0.2857142857142857,
+    "recall": 0.8275862068965517,
+    "f1": 0.4247787610619469,
+    "confusion_matrix": {
+      "tn": 1411,
+      "fp": 60,
+      "fn": 5,
+      "tp": 24
+    },
+    "example_cost_fn10_fp1": 110.0
+  },
+  "test_no_skill_average_precision": 0.019333333333333334,
+  "test_all_negative_cost": 290,
+  "cost_warning": "10:1 is an illustrative preference, not measured economics",
+  "versions": {
+    "python": "3.12.14",
+    "sklearn": "1.8.0",
+    "pandas": "2.2.3",
+    "numpy": "2.3.5"
+  },
+  "cloud_execution": false
+}

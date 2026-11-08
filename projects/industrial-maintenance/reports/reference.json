@@ -1,0 +1,27 @@
+{
+  "Air temperature [K]": {
+    "mean": 300.32155,
+    "std": 2.2834957827123183,
+    "missing": 0.0
+  },
+  "Process temperature [K]": {
+    "mean": 309.922,
+    "std": 1.6650279436120086,
+    "missing": 0.0
+  },
+  "Rotational speed [rpm]": {
+    "mean": 1539.9996666666666,
+    "std": 182.90938550852644,
+    "missing": 0.0
+  },
+  "Torque [Nm]": {
+    "mean": 39.954950000000004,
+    "std": 9.97703524948978,
+    "missing": 0.0
+  },
+  "Tool wear [min]": {
+    "mean": 108.96,
+    "std": 63.97646883629006,
+    "missing": 0.0
+  }
+}
