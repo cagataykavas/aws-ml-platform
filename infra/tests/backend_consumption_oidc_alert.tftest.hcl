@@ -21,6 +21,13 @@ mock_provider "aws" {
       partition = "aws"
     }
   }
+
+  override_resource {
+    target = aws_kms_key.network_incidents
+    values = {
+      arn = "arn:aws:kms:eu-central-1:123456789012:key/00000000-0000-4000-8000-000000000000"
+    }
+  }
 }
 
 variables {
