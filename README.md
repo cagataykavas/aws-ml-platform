@@ -631,6 +631,8 @@ backend_consumption_auditor_github_repository_id     = "1330973918"
 backend_consumption_auditor_github_environment       = "backend-consumption-audit-staging"
 backend_consumption_auditor_github_ref               = "refs/heads/main"
 backend_consumption_auditor_github_workflow          = "backend-consumption-live-audit"
+enable_managed_network_incident_topic                = true
+enable_backend_consumption_oidc_failure_alert        = true
 ```
 
 The role policy is restricted to `terraform-backend-consumptions/v1/*`. The manual
@@ -649,6 +651,15 @@ Consequently, a renamed/recreated repository, different branch, differently name
 off-pattern session cannot reuse an otherwise approved Environment token to obtain this role.
 Treat changes to the default branch, workflow name, or session convention as trust-policy
 migrations and review them together with the protected workflow.
+
+The separate failure alert is also opt-in. It matches only CloudTrail-delivered
+`AssumeRoleWithWebIdentity` failures whose requested role ARN is this auditor, then uses a dedicated
+EventBridge delivery role to publish into the existing KMS-encrypted incident topic. The delivery
+role trust is scoped to the exact rule ARN and account; its permissions allow one topic and constrain
+KMS use to that topic's encryption context through regional SNS. Successful assumptions are not
+alerted. CloudTrail service events reach EventBridge on a best-effort basis, so retain an account
+trail and independently monitor the incident queue rather than treating this route as a complete
+authentication ledger.
 
 This utility does not provision the signing key, trust the runner clock, prove Environment approval,
 or call Terraform. The workflow must obtain its claims from the validated OIDC identity, pin the
@@ -715,6 +726,7 @@ infra/
 ├── incident_redrive_drill.tf # opt-in isolated queues and Environment-scoped OIDC role
 ├── retained_evidence_auditor.tf # opt-in read-only recovery-auditor OIDC role
 ├── backend_consumption_auditor.tf # opt-in exact-prefix backend-consumption auditor
+├── backend_consumption_oidc_alert.tf # opt-in failed OIDC assumption incident route
 ├── dashboard.tf      # opt-in network incident triage dashboard
 └── autoscaling.tf    # ECS scaling, logs and ALB alarms
 scripts/
