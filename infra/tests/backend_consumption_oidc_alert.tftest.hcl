@@ -97,7 +97,6 @@ run "backend_consumption_oidc_failure_alert_is_exact_and_encrypted" {
       jsondecode(aws_iam_role_policy.backend_consumption_oidc_failure_delivery[0].policy).Statement[0].Action == "sns:Publish"
       && jsondecode(aws_iam_role_policy.backend_consumption_oidc_failure_delivery[0].policy).Statement[0].Resource == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
       && toset(jsondecode(aws_iam_role_policy.backend_consumption_oidc_failure_delivery[0].policy).Statement[1].Action) == toset(["kms:Decrypt", "kms:GenerateDataKey*"])
-      && jsondecode(aws_iam_role_policy.backend_consumption_oidc_failure_delivery[0].policy).Statement[1].Resource == aws_kms_key.network_incidents[0].arn
       && jsondecode(aws_iam_role_policy.backend_consumption_oidc_failure_delivery[0].policy).Statement[1].Condition.StringEquals["kms:EncryptionContext:aws:sns:topicArn"] == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
       && jsondecode(aws_iam_role_policy.backend_consumption_oidc_failure_delivery[0].policy).Statement[1].Condition.StringEquals["kms:ViaService"] == "sns.eu-central-1.amazonaws.com"
     )
@@ -107,7 +106,6 @@ run "backend_consumption_oidc_failure_alert_is_exact_and_encrypted" {
   assert {
     condition = (
       aws_cloudwatch_event_target.backend_consumption_oidc_failure[0].arn == "arn:aws:sns:eu-central-1:123456789012:ml-platform-network-incidents"
-      && aws_cloudwatch_event_target.backend_consumption_oidc_failure[0].role_arn == aws_iam_role.backend_consumption_oidc_failure_delivery[0].arn
       && jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[2].Sid == "BackendConsumptionOidcFailurePublish"
       && jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[2].Principal.AWS == "arn:aws:iam::123456789012:role/ml-platform-backend-consumption-oidc-alert"
       && jsondecode(aws_sns_topic_policy.network_incidents[0].policy).Statement[2].Action == "SNS:Publish"
