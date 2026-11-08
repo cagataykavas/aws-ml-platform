@@ -137,6 +137,24 @@ resource "aws_kms_key" "network_incidents" {
         }
       }],
       [for statement in [{
+        Sid    = "BackendConsumptionOidcFailureDelivery"
+        Effect = "Allow"
+        Principal = {
+          AWS = local.backend_consumption_oidc_failure_delivery_role_arn
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:EncryptionContext:aws:sns:topicArn" = local.managed_network_incident_topic_arn
+            "kms:ViaService"                         = "sns.${var.aws_region}.amazonaws.com"
+          }
+        }
+      }] : statement if var.enable_backend_consumption_oidc_failure_alert],
+      [for statement in [{
         Sid    = "SnsEncryptedQueueDelivery"
         Effect = "Allow"
         Principal = {
@@ -208,6 +226,8 @@ resource "aws_kms_key" "network_incidents" {
     Workload = "ml-platform"
     Purpose  = "network-incident-routing"
   }
+
+  depends_on = [aws_iam_role.backend_consumption_oidc_failure_delivery]
 }
 
 resource "aws_sns_topic" "network_incidents" {
@@ -257,6 +277,15 @@ resource "aws_sns_topic_policy" "network_incidents" {
       },
       ],
       [for statement in [{
+        Sid    = "BackendConsumptionOidcFailurePublish"
+        Effect = "Allow"
+        Principal = {
+          AWS = local.backend_consumption_oidc_failure_delivery_role_arn
+        }
+        Action   = "SNS:Publish"
+        Resource = local.managed_network_incident_topic_arn
+      }] : statement if var.enable_backend_consumption_oidc_failure_alert],
+      [for statement in [{
         Sid    = "DeliveryCanaryPublish"
         Effect = "Allow"
         Principal = {
@@ -281,6 +310,8 @@ resource "aws_sns_topic_policy" "network_incidents" {
       ]
     )
   })
+
+  depends_on = [aws_iam_role.backend_consumption_oidc_failure_delivery]
 }
 
 resource "terraform_data" "managed_network_incident_queue_contract" {
